@@ -13,6 +13,11 @@ from audio_variants import GenerationVariant
 TTSBackend = Callable[[str, str, float, int], tuple[np.ndarray, int]]
 
 
+TARGET_SAMPLE_RATE = 16000  # every downstream consumer (microWakeWord feature
+# extraction, evaluate.py's TFLiteScorer) assumes 16kHz mono, matching the
+# Android app's AudioRecorder/WakeWordDetector contract.
+
+
 def make_vieneu_backend() -> TTSBackend:
     """Real backend. Must be run under services/.venv (has `vieneu` installed)."""
     from vieneu import Vieneu
@@ -21,8 +26,14 @@ def make_vieneu_backend() -> TTSBackend:
 
     def backend(text: str, voice: str, temperature: float, top_k: int) -> tuple[np.ndarray, int]:
         voice_data = tts.get_preset_voice(voice)
-        audio, sample_rate = tts.infer(text, voice=voice_data, temperature=temperature, top_k=top_k)
-        return np.asarray(audio, dtype=np.float32), sample_rate
+        # Vieneu.infer() returns just the audio array, not (audio, sample_rate) --
+        # its native rate is exposed separately via tts.sample_rate (24kHz for the
+        # standard/GGUF backend, not 16kHz).
+        audio = np.asarray(tts.infer(text, voice=voice_data, temperature=temperature, top_k=top_k), dtype=np.float32)
+        native_sample_rate = tts.sample_rate
+        if native_sample_rate != TARGET_SAMPLE_RATE:
+            audio = librosa.resample(audio, orig_sr=native_sample_rate, target_sr=TARGET_SAMPLE_RATE)
+        return audio, TARGET_SAMPLE_RATE
 
     return backend
 
