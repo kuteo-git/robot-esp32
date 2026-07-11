@@ -221,7 +221,9 @@ def main(
 
     result = compute_metrics(positive_scores, negative_scores, args.threshold)
 
-    Path(args.report_out).write_text(json.dumps(dataclasses.asdict(result), indent=2))
+    report_path = Path(args.report_out)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(dataclasses.asdict(result), indent=2))
     print(
         f"FRR={result.false_reject_rate:.3f} "
         f"FAR={result.false_accept_rate:.3f} "

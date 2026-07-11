@@ -50,6 +50,32 @@ def test_main_writes_report_json(tmp_path):
     assert report["false_accept_rate"] == 0.0
 
 
+def test_main_creates_report_out_parent_directory_if_missing(tmp_path):
+    pos_dir = tmp_path / "positive"
+    neg_dir = tmp_path / "negative"
+    pos_dir.mkdir()
+    neg_dir.mkdir()
+    sf.write(str(pos_dir / "pos_1.wav"), np.zeros(100, dtype=np.float32), 16000)
+    sf.write(str(neg_dir / "neg_1.wav"), np.zeros(100, dtype=np.float32), 16000)
+
+    # reports/ does not exist yet under tmp_path.
+    report_path = tmp_path / "reports" / "nested" / "report.json"
+    evaluate.main(
+        argv=[
+            "--model", "unused.tflite",
+            "--positive-dir", str(pos_dir),
+            "--negative-dir", str(neg_dir),
+            "--threshold", "0.5",
+            "--report-out", str(report_path),
+        ],
+        scorer_factory=lambda model_path: _FakeScorer(model_path),
+    )
+
+    assert report_path.exists()
+    report = json.loads(report_path.read_text())
+    assert report["num_positive"] == 1
+
+
 def test_score_paths_scores_every_path(tmp_path):
     (tmp_path / "pos_1.wav").write_bytes(b"")
     (tmp_path / "neg_1.wav").write_bytes(b"")
