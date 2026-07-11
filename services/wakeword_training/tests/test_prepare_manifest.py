@@ -77,8 +77,26 @@ def test_main_negative_dir_flag_replaces_default_instead_of_appending(tmp_path, 
     default list means a user-supplied --negative-dir would otherwise be
     ADDED to the Task 6 defaults rather than replacing them. main() must
     override the defaults entirely when --negative-dir is passed.
+
+    To actually discriminate buggy vs. fixed behavior, this test plants real
+    .wav files at the literal relative paths main()'s default list uses
+    ("data/negative_vi/hard", "data/negative_vi/generic", relative to cwd)
+    *and* chdir()s into tmp_path, so that if the buggy append-to-default
+    code path were active, those default-path files would be real,
+    globbable, and would show up in the manifest alongside the explicitly
+    passed --negative-dir. A version of this test that leaves the default
+    paths nonexistent (as an earlier version of this test did) can't tell
+    buggy and fixed code apart, since rglob() over a nonexistent directory
+    silently yields nothing either way.
     """
     pos_dir = _make_wavs(tmp_path / "positive", 2)
+
+    # Plant files at the exact default --negative-dir locations (relative to
+    # the cwd this test chdir()s to), so they'd be picked up for real if the
+    # append-not-replace bug were present.
+    _make_wavs(tmp_path / "data" / "negative_vi" / "hard", 2)
+    _make_wavs(tmp_path / "data" / "negative_vi" / "generic", 2)
+
     only_neg_dir = _make_wavs(tmp_path / "only_neg", 2)
     out_path = tmp_path / "manifest.json"
 
@@ -98,9 +116,9 @@ def test_main_negative_dir_flag_replaces_default_instead_of_appending(tmp_path, 
         manifest = json.load(f)
 
     all_negative = manifest["train"]["negative"] + manifest["val"]["negative"]
+    # Fixed behavior: only the explicitly-passed --negative-dir's 2 files.
+    # Buggy (append-to-default) behavior would yield 6 (2 explicit + 2 + 2
+    # from the real files planted at the default paths above).
     assert len(all_negative) == 2
     assert all(str(only_neg_dir) in p for p in all_negative)
-    # None of the (nonexistent, unrelated) Task 6 default dirs should have
-    # been consulted -- if they had been appended, this would still pass
-    # trivially since they don't exist under tmp_path, so assert count == 2
-    # above is the real guard against the append-not-replace bug.
+    assert not any("negative_vi" in p for p in all_negative)
