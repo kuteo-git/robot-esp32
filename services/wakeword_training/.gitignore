@@ -2,6 +2,7 @@
 vendor/
 data/
 models/
+reports/
 *.pyc
 __pycache__/
 training_parameters.yaml
