@@ -1,6 +1,8 @@
 import numpy as np
 
 import generate_negatives
+from audio_variants import PRESET_VOICES, build_variants
+from phrases import GENERIC_NEGATIVE_SENTENCES, HARD_NEGATIVE_PHRASES
 
 
 def _fake_backend_factory():
@@ -9,45 +11,38 @@ def _fake_backend_factory():
     return backend
 
 
-def test_main_writes_hard_and_generic_subfolders(tmp_path, monkeypatch):
-    # Shrink the grid so the test is fast and deterministic.
-    import audio_variants
-
-    monkeypatch.setattr(audio_variants, "PRESET_VOICES", ["v1"])
+def test_main_writes_hard_and_generic_subfolders(tmp_path):
     generate_negatives.main(
         argv=["--out-dir", str(tmp_path)],
         backend_factory=_fake_backend_factory,
     )
-    from phrases import HARD_NEGATIVE_PHRASES, GENERIC_NEGATIVE_SENTENCES
 
     hard_wavs = list((tmp_path / "hard").glob("*.wav"))
     generic_wavs = list((tmp_path / "generic").glob("*.wav"))
 
-    # Expected count computed independently of build_variants(), from the
-    # known non-voice axis sizes, so this doesn't just echo whatever
-    # build_variants() happens to return (which would pass even if the
-    # PRESET_VOICES monkeypatch silently failed to take effect).
-    patched_voice_count = 1  # len(["v1"])
+    # Expected count computed independently of what main() actually does,
+    # from the module's own reduced negative-specific axis constants plus
+    # the real (full) voice count, so this doesn't just echo whatever
+    # main() happens to produce.
     non_voice_combinations = (
-        len(audio_variants.TEMPERATURES)
-        * len(audio_variants.TOP_KS)
-        * len(audio_variants.PITCH_SEMITONES)
-        * len(audio_variants.SPEED_FACTORS)
+        len(generate_negatives.NEGATIVE_TEMPERATURES)
+        * len(generate_negatives.NEGATIVE_TOP_KS)
+        * len(generate_negatives.NEGATIVE_PITCH_SEMITONES)
+        * len(generate_negatives.NEGATIVE_SPEED_FACTORS)
     )
-    expected_variant_count = patched_voice_count * non_voice_combinations
-    assert expected_variant_count == 600
+    expected_variant_count = len(PRESET_VOICES) * non_voice_combinations
+    assert expected_variant_count == 216
 
     assert len(hard_wavs) == len(HARD_NEGATIVE_PHRASES) * expected_variant_count
     assert len(generic_wavs) == len(GENERIC_NEGATIVE_SENTENCES) * expected_variant_count
-    assert len(hard_wavs) == 4200
-    assert len(generic_wavs) == 6000
+    assert len(hard_wavs) == 1512
+    assert len(generic_wavs) == 2160
 
-    # Sanity check: this shrunk grid must be meaningfully smaller than the
-    # full production grid (6 voices), so if the monkeypatch above ever
-    # silently stops working (e.g. due to the def-time-default bug), this
-    # test fails loudly instead of trivially matching build_variants().
-    full_production_voice_count = 6  # PRESET_VOICES is patched above, so hardcode the real count.
-    full_production_grid_size = full_production_voice_count * non_voice_combinations
+    # Sanity check: the reduced negative grid must be meaningfully smaller
+    # than the full production grid used for positives (3,600 variants),
+    # so negative generation doesn't balloon back into tens of thousands of
+    # clips per phrase.
+    full_production_grid_size = len(build_variants())
     assert full_production_grid_size == 3600
     assert expected_variant_count < full_production_grid_size
 
