@@ -1469,7 +1469,27 @@ bite-sized tasks, and not run by an automated test:
 3. Fill in the real dataset repo IDs in `download_background_datasets.py` (per Task 7's note), then: `services/wakeword_training/.venv-train/bin/python services/wakeword_training/download_background_datasets.py --out-dir services/wakeword_training/data/negative_standard`
 4. `services/wakeword_training/.venv-train/bin/python services/wakeword_training/prepare_manifest.py --out services/wakeword_training/data/manifest.json`
 5. `services/wakeword_training/run_training.sh` → produces `models/mai_oi.tflite`
-6. `services/wakeword_training/.venv-train/bin/python services/wakeword_training/evaluate.py --model models/mai_oi.tflite --positive-dir data/positive_val --negative-dir data/negative_val --report-out reports/synthetic.json` (using whichever val-split paths Task 8 wrote out)
+
+   **Before running this step for real** (not just a toy/smoke-test model): note that
+   `run_training.sh`'s default invocation of `extract_features.py` passes no
+   `--rir-dir`/`--background-dir`, so `AddBackgroundNoise`/RIR augmentation are no-ops
+   (empty impulse/background path lists — see `extract_features.py`'s module docstring
+   and `Augmentation`'s own identity-transform fallback), and `train.py`'s
+   `training_parameters.yaml` config hardcodes `time_mask_count`/`freq_mask_count` to
+   `[0]` (SpecAugment masking off), matching upstream's own notebook cell 9 example
+   verbatim. The spec assumes this augmentation is active at training time (that's *why*
+   positive generation is allowed to stay clean — augmentation is deferred to here). The
+   script itself now prints a loud warning about the RIR/background gap before running;
+   read it. Running the default invocation trains a model without that augmentation —
+   fine for a smoke test, but supply real `--rir-dir`/`--background-dir` datasets to
+   `extract_features.py` (or edit `run_training.sh`'s invocation of it) before training a
+   production-quality model. This fix does not source or wire up real RIR/background
+   datasets — that's a separate, later step.
+6. `services/wakeword_training/.venv-train/bin/python services/wakeword_training/evaluate.py --model models/mai_oi.tflite --manifest services/wakeword_training/data/manifest.json --split val --report-out reports/synthetic.json`
+   (Task 8's `prepare_manifest.py` never materializes the val split as
+   `data/positive_val`/`data/negative_val` directories — it writes individual file paths
+   into `data/manifest.json`'s `"val"` key. `evaluate.py`'s `--manifest`/`--split` mode
+   reads those paths directly instead of requiring a directory of pre-copied WAVs.)
 7. Capture real-world "Mai ơi" recordings and real ambient negatives using the Android
    app's existing mic test tool (`MicTest.kt`, `http://<R1-ip>:8088` → mic test → record
    several takes of "Mai ơi" plus several minutes of normal household audio), save the

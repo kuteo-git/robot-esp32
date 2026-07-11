@@ -28,6 +28,29 @@ set -euo pipefail
 cd "$(dirname "$0")"
 source .venv-train/bin/activate
 
+# ---------------------------------------------------------------------------
+# WARNING: augmentation is OFF by default in this invocation.
+#
+# No --rir-dir/--background-dir is passed to extract_features.py below, so
+# AddBackgroundNoise and RIR augmentation are no-ops (empty impulse/background
+# path lists -- see extract_features.py's module docstring and
+# Augmentation's own identity-transform fallback when given an empty list).
+# train.py's training_parameters.yaml also hardcodes
+# time_mask_count/freq_mask_count to [0] (SpecAugment time/freq masking off),
+# matching upstream's own notebook cell 9 example verbatim.
+#
+# This is fine for a toy/smoke-test run, but the spec assumes this
+# augmentation is ACTIVE at real training time (that's why positive
+# generation stays clean -- augmentation is deliberately deferred to here).
+# Before training a production-quality model, supply real RIR/background
+# datasets via extract_features.py's --rir-dir/--background-dir flags (edit
+# the invocation below). This script does not source or wire up such
+# datasets itself.
+# ---------------------------------------------------------------------------
+echo "WARNING: training without RIR/background-noise augmentation (--rir-dir/--background-dir not supplied)." >&2
+echo "         AddBackgroundNoise/RIR are no-ops and SpecAugment masking is off in this default run." >&2
+echo "         Supply real datasets to extract_features.py's --rir-dir/--background-dir before training a production-quality model." >&2
+
 # Step A: feature extraction (raw WAV -> Ragged Mmap spectrogram features).
 python extract_features.py \
   --manifest data/manifest.json \
