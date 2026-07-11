@@ -1,0 +1,6 @@
+.venv-train/
+vendor/
+data/
+models/
+*.pyc
+__pycache__/
