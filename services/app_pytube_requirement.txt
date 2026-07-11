@@ -1,0 +1,7 @@
+Flask==2.3.3
+pytubefix==9.4.1
+yt-dlp
+yt-dlp-ejs
+ytmusicapi
+# LƯU Ý: cần cài Deno (JS runtime) để yt-dlp giải YouTube signature/n-challenge:
+#   brew install deno

@@ -1,0 +1,193 @@
+# ============================================================
+#  Cấu hình override cho robot tiếng Việt — TEMPLATE
+#  Stack: Whisper local (STT) + Kimi (LLM cloud) + VieNeu-TTS local (TTS)
+#  File này GHI ĐÈ lên config.yaml gốc. Chỉ cần để các mục cần đổi.
+#
+#  CÁCH DÙNG: cp .config.example.yaml .config.yaml rồi điền IP/key thật của bạn.
+#  .config.yaml đã nằm trong .gitignore — KHÔNG commit file đó (chứa API key thật).
+# ============================================================
+
+server:
+  ip: 0.0.0.0
+  port: 8000
+  http_port: 8003
+  # Địa chỉ websocket OTA gửi cho thiết bị ESP32 (IP LAN của máy chạy server này)
+  websocket: ws://<IP_LAN_CUA_BAN>:8000/xiaozhi/v1/
+  # Múi giờ Việt Nam (UTC+7). Mặc định config gốc là +8 (giờ Trung Quốc) -> robot lệch 1 tiếng.
+  timezone_offset: +7
+  # MQTT+UDP gateway — ONLY for the PHICOMM R1 running STOCK / aiboxplus firmware, which speaks
+  # MQTT+UDP instead of plain WebSocket. Leave these null for the self-built Android app or any
+  # ESP32-S3 device (they connect over WebSocket directly). If you DO use stock R1 firmware, set
+  # these to match the xiaozhi-mqtt-gateway .env (see services/MQTT_GATEWAY.md).
+  mqtt_gateway: null
+  mqtt_signature_key: null
+  udp_gateway: null
+
+# Dùng template prompt TIẾNG VIỆT (thay agent-base-prompt.txt mặc định bằng tiếng Trung)
+prompt_template: agent-base-prompt-vi.txt
+
+# ---------- Đánh thức: nhận "Alexa" là wakeup-word + TẮT lời chào -> thức IM, chờ lệnh ----------
+# Cơ chế (core/handle/textHandler/listenMessageHandler.py):
+#   wakeup_words CÓ "Alexa" + enable_greeting=false -> nhánh "stop": KHÔNG gọi LLM, KHÔNG phát audio chào.
+# Nếu THIẾU wakeup_words: "Alexa" rớt vào else -> đẩy thẳng cho LLM -> nó BỊA (đọc âm lịch/thời tiết).
+enable_greeting: false
+wakeup_words:
+  - "Alexa"
+  - "alexa"
+  - "ALEXA"
+# Phát 1 tiếng "ding" ngắn khi thức (thay vì im hoàn toàn). Tiếng phát trên LOA ROBOT.
+wakeup_awake_sound: true
+wakeup_awake_voice: "config/assets/tts_notify_loud.mp3"
+# ---------- Tạm biệt: phát file âm thanh cố định thay vì để LLM sinh câu goodbye ----------
+exit_goodbye_sound: true
+exit_goodbye_voice: "config/assets/goodbye.wav"
+# ---------- Chuông báo "tới lượt mày nói" ----------
+listen_start_sound: true
+listen_start_voice: "config/assets/listen_ding.wav"
+# ---------- Tiếng "ờ..." lấp khoảng chờ khi robot đang xử lý (STT+LLM ~5s) ----------
+thinking_filler_sound: true
+thinking_filler_dir: "config/assets/thinking"
+# ---------- Giữ phiên trò chuyện lâu hơn ----------
+# Im KHÔNG nói gì quá ngần này (giây) thì server tự kết thúc phiên. Mặc định 120s.
+close_connection_no_voice_time: 60
+
+# ---------- Audio xuống thiết bị ----------
+xiaozhi:
+  type: hello
+  version: 1
+  transport: websocket
+  audio_params:
+    format: opus
+    sample_rate: 16000
+    channels: 1
+    frame_duration: 60
+
+# ---------- VAD ----------
+VAD:
+  SileroVAD:
+    type: silero
+    model_dir: models/snakers4_silero-vad
+    threshold: 0.35
+    threshold_low: 0.25
+    min_silence_duration_ms: 800
+
+selected_module:
+  VAD: SileroVAD
+  ASR: WhisperLocal
+  LLM: KimiLLM
+  VLLM: ChatGLMVLLM
+  TTS: VieNeuTTS
+  Memory: nomem
+  Intent: function_call
+
+# ---------- LLM ----------
+# NOTE: If your client supplies its own model per session (e.g. the xiaozhi-android / R1 control app
+# sends llm_config in the hello — see SETUP.md §5.1), the section selected below is only a BOOT
+# PLACEHOLDER: the server needs a structurally-valid LLM to start, but the client's model overrides it
+# per session and this one is never actually called. In that case you do NOT need a real API key here.
+#
+# If instead you want the SERVER itself to call an LLM (for clients that don't send llm_config), fill in
+# a real key/endpoint below. Any OpenAI-compatible provider works (set type: openai, base_url, api_key).
+LLM:
+  # Boot placeholder for the "client brings its own model" setup. Never called when the client sends
+  # llm_config; replace with a real key only if you want the server to call an LLM itself.
+  KimiLLM:
+    type: openai
+    # Example provider (Moonshot/Kimi). International: https://api.moonshot.ai/v1
+    base_url: https://api.moonshot.ai/v1
+    model_name: kimi-k2.6
+    api_key: "<REPLACE_WITH_A_REAL_KEY_OR_LEAVE_IF_CLIENT_SUPPLIES_THE_MODEL>"
+    temperature: 0.6
+    max_tokens: 800
+  # Local Qwen2.5 via Ollama (offline, free). Set selected_module.LLM to OllamaLLM to use it.
+  OllamaLLM:
+    type: ollama
+    model_name: qwen2.5:14b
+    base_url: http://localhost:11434
+    temperature: 0.3
+
+# ---------- ASR: Whisper local (faster-whisper, offline) ----------
+ASR:
+  WhisperLocal:
+    type: openai
+    api_key: "local"
+    base_url: http://127.0.0.1:8001/v1/audio/transcriptions
+    model_name: large-v3-turbo
+    output_dir: tmp/
+
+# ---------- TTS ----------
+TTS:
+  # EdgeTTS (online, free, nhanh ~0.6s, giọng neural tự nhiên).
+  EdgeTTS:
+    type: edge
+    voice: vi-VN-NamMinhNeural
+    language: "Tiếng Việt"
+    output_dir: tmp/
+  VieNeuTTS:
+    type: custom
+    method: POST
+    url: "http://127.0.0.1:8002/tts"
+    format: wav
+    language: "Tiếng Việt"
+    params:
+      input: "{prompt_text}"
+    output_dir: tmp/
+    tts_segment_max_chars: 80
+
+# ---------- Tính cách trợ lý (tiếng Việt) — tuỳ ý đổi persona ----------
+prompt: |
+  Bạn là một trợ lý ảo nói tiếng Việt, thân thiện, trả lời ngắn gọn vì câu trả lời sẽ được đọc thành tiếng.
+  Không dùng emoji, không dùng markdown. Không biết thì nói thật, đừng bịa.
+
+# ---------- Bật function_call + công cụ Home Assistant ----------
+Intent:
+  function_call:
+    type: function_call
+    functions:
+      - hass_get_state
+      - hass_set_state
+      - hass_control_area
+      - play_music_room
+      - play_youtube
+      - get_news_vietnam
+      - get_weather
+      - get_power_outage
+
+# ---------- Offload tool MCP nặng từ R1 sang server (chỉ cần nếu dùng loa PHICOMM R1) ----------
+mcp_device_exclude_tools:
+  - self_weather_get
+  - self_news_play
+  - self_smarthome_control
+  - self_entertainment_play
+  - self_youtube_music_play
+  - self_youtube_playlist_play
+
+# ---------- Plugin Home Assistant ----------
+plugins:
+  # Cache directory for pytube_api.py (services/pytube_api.py, port 114) downloads. Must match
+  # FOLDER_PATH in any cache-cleanup script you set up alongside it. Defaults to
+  # services/pytube_cache/ if omitted.
+  pytube:
+    cache_dir: "services/pytube_cache"
+  get_news_vietnam:
+    news_count: 5
+    tech_feeds:
+      - "https://vnexpress.net/rss/so-hoa.rss"
+      - "https://tinhte.vn/rss"
+      - "https://www.theverge.com/rss/index.xml"
+    society_feeds:
+      - "https://vnexpress.net/rss/thoi-su.rss"
+    world_feeds:
+      - "https://vnexpress.net/rss/the-gioi.rss"
+    latest_feeds:
+      - "https://vnexpress.net/rss/tin-moi-nhat.rss"
+  home_assistant:
+    base_url: http://<IP_LAN_HOME_ASSISTANT>:8123
+    # Long-Lived Access Token: tạo ở HA -> Hồ sơ người dùng -> Bảo mật -> Long-Lived Access Tokens
+    api_key: "<HA_LONG_LIVED_ACCESS_TOKEN_CUA_BAN>"
+    # PHẢI là chuỗi nhiều dòng (block scalar) — code ghép thẳng vào prompt.
+    # Định dạng mỗi dòng: Khu vực,tên gọi bằng giọng nói,entity_id
+    devices: |
+      Phòng khách,đèn,switch.living_room_light
+      Phòng khách,máy lạnh,climate.living_room_ac
+      Nhà bếp,đèn,switch.kitchen_light

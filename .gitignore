@@ -1,0 +1,48 @@
+# ===== Môi trường / cache (tái tạo được) =====
+services/.venv/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# ===== Log / tạm / audio =====
+logs/
+**/tmp/
+*.wav
+*.log
+
+# ===== Firmware: thư mục build + thư viện tải về (rất nặng, tái tạo bằng idf.py) =====
+**/build/
+**/managed_components/
+**/sdkconfig.old
+firmware/*.zip
+firmware/**/*.bin
+
+# ===== Model ASR/TTS tải về =====
+xiaozhi-esp32-server/main/xiaozhi-server/models/
+**/*.onnx
+**/*.gguf
+
+# ===== Settings công cụ =====
+.claude/
+.DS_Store
+
+
+
+# MLX whisper models (lớn ~4.5GB, convert bằng services/convert_phowhisper_mlx.sh)
+services/models/
+services/asr_debug/
+
+# CodeGraph index (local, do not commit)
+.codegraph/
+
+# ===== Secrets: cấu hình local + token thật (KHÔNG public) =====
+# Copy xiaozhi-esp32-server/main/xiaozhi-server/data/.config.example.yaml -> data/.config.yaml rồi điền key thật
+xiaozhi-esp32-server/main/xiaozhi-server/data/.config.yaml
+# OAuth token cho Google Home/Nest media_player + pytube downloader (sinh ra lúc chạy, không commit)
+services/tokens/
+# Cookie jar yt-dlp (session YouTube/Google thật)
+services/cookies.txt
+services/**/cookies.txt
+
+# Downloaded songs cache (pytube_api.py) — large binaries, possibly copyrighted, never commit
+services/pytube_cache/
