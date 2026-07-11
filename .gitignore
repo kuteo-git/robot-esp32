@@ -46,3 +46,6 @@ services/**/cookies.txt
 
 # Downloaded songs cache (pytube_api.py) — large binaries, possibly copyrighted, never commit
 services/pytube_cache/
+
+# Git worktrees for isolated agent workspaces
+.worktrees/
