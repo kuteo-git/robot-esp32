@@ -33,12 +33,20 @@ class GenerationVariant:
 
 
 def build_variants(
-    voices: list[str] = PRESET_VOICES,
-    temperatures: list[float] = TEMPERATURES,
-    top_ks: list[int] = TOP_KS,
-    pitch_semitones: list[int] = PITCH_SEMITONES,
-    speed_factors: list[float] = SPEED_FACTORS,
+    voices: list[str] | None = None,
+    temperatures: list[float] | None = None,
+    top_ks: list[int] | None = None,
+    pitch_semitones: list[int] | None = None,
+    speed_factors: list[float] | None = None,
 ) -> list["GenerationVariant"]:
+    # Defaults are resolved here (call time), not in the signature (def time),
+    # so tests can monkeypatch the module-level constants (e.g. PRESET_VOICES)
+    # and have build_variants() with no args pick up the patched value.
+    voices = voices if voices is not None else PRESET_VOICES
+    temperatures = temperatures if temperatures is not None else TEMPERATURES
+    top_ks = top_ks if top_ks is not None else TOP_KS
+    pitch_semitones = pitch_semitones if pitch_semitones is not None else PITCH_SEMITONES
+    speed_factors = speed_factors if speed_factors is not None else SPEED_FACTORS
     return [
         GenerationVariant(voice, temperature, top_k, pitch, speed)
         for voice in voices
