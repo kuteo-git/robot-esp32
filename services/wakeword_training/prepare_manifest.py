@@ -139,30 +139,30 @@ def main(argv: list[str] | None = None) -> None:
             "see this file's module docstring for the full reasoning."
         )
     )
+    default_negative_dirs = ["data/negative_vi/hard", "data/negative_vi/generic"]
     parser.add_argument("--positive-dir", default="data/positive")
     parser.add_argument(
         "--negative-dir",
         action="append",
-        default=[
-            "data/negative_vi/hard",
-            "data/negative_vi/generic",
-        ],
+        default=None,
         help=(
             "Raw-.wav negative source directory; may be passed multiple "
-            "times. Defaults to the Task 6 Vietnamese negative dirs. Do NOT "
-            "pass data/negative_standard here -- it holds pre-extracted "
-            "Ragged Mmap folders (Task 7), not raw .wav files; Task 9 "
-            "references it directly instead."
+            "times, replacing (not adding to) the default list below. "
+            f"Defaults to the Task 6 Vietnamese negative dirs: "
+            f"{default_negative_dirs}. Do NOT pass data/negative_standard "
+            "here -- it holds pre-extracted Ragged Mmap folders (Task 7), "
+            "not raw .wav files; Task 9 references it directly instead."
         ),
     )
     parser.add_argument("--val-fraction", type=float, default=0.15)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", default="data/manifest.json")
     args = parser.parse_args(argv)
+    negative_dirs = args.negative_dir if args.negative_dir is not None else default_negative_dirs
 
     manifest = build_manifest(
         Path(args.positive_dir),
-        [Path(d) for d in args.negative_dir],
+        [Path(d) for d in negative_dirs],
         val_fraction=args.val_fraction,
         seed=args.seed,
     )
