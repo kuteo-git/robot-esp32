@@ -59,6 +59,26 @@ class TFLiteScorer:
     manage -- mirroring vendor/microWakeWord/microwakeword/test.py's
     ``tflite_streaming_model_roc``, which is the same function
     train.py/evaluate_model() rely on for the model's own FRR/FAR reporting.
+
+    CAVEAT -- per-clip aggregation is a SIMPLIFIED variant of upstream's own
+    ROC methodology, not a reproduction of it. ``tflite_streaming_model_roc()``
+    (vendor/microWakeWord/microwakeword/test.py, ~lines 367-373) scores a
+    positive clip by first dropping the first ``ignore_slices_after_accept``
+    (25) chunks, then taking a 5-frame moving average
+    (``sliding_window_view(..., sliding_window_length=5).mean(axis=-1)``)
+    over what remains, and only THEN taking ``np.max`` of that
+    trimmed+smoothed sequence. ``score_wav_file`` below skips both the
+    warm-up trim and the smoothing and takes a plain ``max()`` over the raw
+    per-chunk probabilities instead (see that method's docstring for why).
+    Consequence: this class's scores, and therefore evaluate.py's FRR/FAR
+    report, are NOT directly comparable to the numbers upstream's own
+    ``model_train_eval.py --test_tflite_streaming_quantized`` run would
+    report for the identical model -- unsmoothed raw-max can be
+    systematically more optimistic on the negative set, since a single
+    transient probability spike near the threshold is never smoothed away
+    here the way upstream's moving average would suppress it. Treat this
+    report's FRR/FAR as this project's own evaluation metric, not as a
+    stand-in for upstream's ROC metric.
     """
 
     def __init__(self, model_path: str):
@@ -82,11 +102,20 @@ class TFLiteScorer:
             # Clip too short to produce even one full spectrogram chunk.
             return 0.0
 
-        # Per-clip score = max probability seen at any point in the stream,
-        # matching vendor/microWakeWord/microwakeword/test.py's
-        # tflite_streaming_model_roc(), which scores each positive clip as
-        # `np.max(...)` over its streaming probability sequence (a wake word
-        # can occur anywhere in the clip, not just at a fixed position).
+        # Per-clip score = max probability seen at any point in the stream
+        # (a wake word can occur anywhere in the clip, not just at a fixed
+        # position), which is the same core idea as
+        # vendor/microWakeWord/microwakeword/test.py's
+        # tflite_streaming_model_roc() (each positive clip's score there is
+        # also an `np.max(...)` over its streaming probability sequence).
+        #
+        # NOT the same numbers, though: upstream first drops the first 25
+        # chunks (`ignore_slices_after_accept`) and applies a 5-frame moving
+        # average before taking that max (see the class docstring's CAVEAT
+        # section). This method deliberately skips both steps and maxes the
+        # raw per-chunk probabilities directly -- simpler, but the resulting
+        # FRR/FAR is this project's own metric, not directly comparable to
+        # upstream's own training-time ROC evaluation of the same model.
         return float(max(probabilities))
 
 
