@@ -1,8 +1,23 @@
-"""Score a trained mai_oi.tflite model against a positive/negative WAV directory pair.
+"""Score a trained mai_oi.tflite model against a positive/negative set of WAV files.
 
-Works for both the synthetic held-out set (Task 8's val split) and the real-world set
-captured via the Android app's mic test tool -- point --positive-dir/--negative-dir at
-whichever set you want to evaluate.
+Two mutually-exclusive input modes (pick exactly one):
+
+  1. Manifest mode (``--manifest``/``--split``) -- for the synthetic held-out set
+     produced by Task 8's ``prepare_manifest.py``. That script writes
+     ``data/manifest.json`` as a JSON object of
+     ``{"train"/"val": {"positive"/"negative": [<raw WAV file path>, ...]}}`` --
+     individual file paths, never materialized as a directory of WAVs. Pass
+     ``--manifest data/manifest.json --split val`` to score exactly the file paths
+     listed under ``manifest["val"]["positive"]``/``manifest["val"]["negative"]``
+     directly, with no directory-materialization step required.
+
+  2. Directory mode (``--positive-dir``/``--negative-dir``) -- for the real-world set
+     captured via the Android app's mic test tool (``MicTest.kt``), which really is
+     saved to disk as a directory of WAV files. Every ``*.wav`` file directly inside
+     each directory is globbed and scored.
+
+Do not mix the two modes (e.g. --manifest with --positive-dir): supply either
+--manifest/--split, or both --positive-dir and --negative-dir.
 """
 from __future__ import annotations
 
@@ -119,25 +134,91 @@ class TFLiteScorer:
         return float(max(probabilities))
 
 
+def score_paths(scorer, paths: list[str]) -> list[float]:
+    """Scores an explicit list of WAV file paths, in the given order."""
+    return [scorer.score_wav_file(Path(p)) for p in paths]
+
+
 def score_directory(scorer, dir_path: Path) -> list[float]:
-    return [scorer.score_wav_file(p) for p in sorted(Path(dir_path).glob("*.wav"))]
+    """Scores every ``*.wav`` file directly inside ``dir_path`` (sorted for
+    determinism). Thin wrapper around ``score_paths`` for the directory-based
+    real-world-eval mode."""
+    return score_paths(scorer, sorted(str(p) for p in Path(dir_path).glob("*.wav")))
+
+
+def _load_manifest_split(manifest_path: str, split: str) -> tuple[list[str], list[str]]:
+    """Reads Task 8's ``prepare_manifest.py`` manifest.json and returns the
+    ``(positive_paths, negative_paths)`` file-path lists for ``split``
+    ("train" or "val")."""
+    manifest = json.loads(Path(manifest_path).read_text())
+    if split not in manifest:
+        raise ValueError(
+            f"{manifest_path}: no {split!r} split in manifest "
+            f"(available: {sorted(manifest.keys())})"
+        )
+    split_data = manifest[split]
+    return list(split_data.get("positive", [])), list(split_data.get("negative", []))
 
 
 def main(
     argv: list[str] | None = None,
     scorer_factory: Callable[[str], object] = TFLiteScorer,
 ) -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--model", required=True)
-    parser.add_argument("--positive-dir", required=True)
-    parser.add_argument("--negative-dir", required=True)
+    parser.add_argument(
+        "--manifest",
+        help="Path to manifest.json (Task 8's prepare_manifest.py output). "
+        "Requires --split. Mutually exclusive with --positive-dir/--negative-dir.",
+    )
+    parser.add_argument(
+        "--split",
+        choices=["train", "val"],
+        help="Which manifest split to score ('train' or 'val'). Requires --manifest.",
+    )
+    parser.add_argument(
+        "--positive-dir",
+        help="Directory of positive *.wav files to glob and score. Requires "
+        "--negative-dir. Mutually exclusive with --manifest/--split.",
+    )
+    parser.add_argument(
+        "--negative-dir",
+        help="Directory of negative *.wav files to glob and score. Requires "
+        "--positive-dir. Mutually exclusive with --manifest/--split.",
+    )
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--report-out", required=True)
     args = parser.parse_args(argv)
 
+    manifest_mode = args.manifest is not None or args.split is not None
+    directory_mode = args.positive_dir is not None or args.negative_dir is not None
+
+    if manifest_mode and directory_mode:
+        parser.error(
+            "--manifest/--split and --positive-dir/--negative-dir are mutually "
+            "exclusive -- pick one mode."
+        )
+    if not manifest_mode and not directory_mode:
+        parser.error(
+            "must supply either --manifest and --split, or both --positive-dir "
+            "and --negative-dir."
+        )
+    if manifest_mode and (args.manifest is None or args.split is None):
+        parser.error("--manifest and --split must be supplied together.")
+    if directory_mode and (args.positive_dir is None or args.negative_dir is None):
+        parser.error("--positive-dir and --negative-dir must be supplied together.")
+
     scorer = scorer_factory(args.model)
-    positive_scores = score_directory(scorer, Path(args.positive_dir))
-    negative_scores = score_directory(scorer, Path(args.negative_dir))
+    if manifest_mode:
+        positive_paths, negative_paths = _load_manifest_split(args.manifest, args.split)
+        positive_scores = score_paths(scorer, positive_paths)
+        negative_scores = score_paths(scorer, negative_paths)
+    else:
+        positive_scores = score_directory(scorer, Path(args.positive_dir))
+        negative_scores = score_directory(scorer, Path(args.negative_dir))
+
     result = compute_metrics(positive_scores, negative_scores, args.threshold)
 
     Path(args.report_out).write_text(json.dumps(dataclasses.asdict(result), indent=2))
