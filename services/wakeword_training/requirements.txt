@@ -3,3 +3,21 @@ numpy>=2.0
 soundfile==0.12.1
 librosa==0.10.2.post1
 huggingface_hub==0.27.1
+# vendor/microWakeWord/microwakeword/train.py calls tf.summary.scalar() for
+# per-step logging (train_model() -> train.train()), which raises
+# TBNotInstalledError at the first training step if `tensorboard` isn't
+# installed. Neither microWakeWord's setup.py nor tensorflow pulls it in
+# transitively; confirmed missing and required during Task 9's training
+# invocation smoke test.
+tensorboard
+# microWakeWord's setup.py depends on "datasets" unpinned, which resolves to
+# the latest release. datasets>=4.0 dropped soundfile/librosa-based audio
+# decoding in favor of a mandatory `torchcodec` dependency, breaking
+# `datasets.Audio(sampling_rate=16000)` decoding used by vendor/microWakeWord's
+# Clips class (microwakeword/audio/clips.py) AND this project's
+# extract_features.py (ManifestClips) with "ImportError: To support decoding
+# audio data, please install 'torchcodec'." Pin below the 4.0 cutoff instead
+# of adding torchcodec (a large extra native dependency); confirmed working
+# with the real feature-extraction pipeline (extract_features.py) via manual
+# smoke test during Task 9.
+datasets<4.0
