@@ -40,7 +40,7 @@ BACKEND = os.environ.get("VIENEU_BACKEND", "mlx")
 MLX_BACKBONE_WEIGHTS = os.environ.get("VIENEU_MLX_BACKBONE_WEIGHTS", "/Volumes/Data/vieneu-mlx/v3turbo_backbone.safetensors")
 MLX_MOSS_WEIGHTS = os.environ.get("VIENEU_MLX_MOSS_WEIGHTS", "/Volumes/Data/vieneu-mlx/moss_decoder.safetensors")
 _mlx_quant = os.environ.get("VIENEU_MLX_QUANTIZE", "4").strip()
-MLX_QUANTIZE_BITS = int(_mlx_quant) if _mlx_quant else None  # "" or "0" -> fp32
+MLX_QUANTIZE_BITS = int(_mlx_quant) if _mlx_quant and _mlx_quant != "0" else None  # "" or "0" -> fp32
 
 
 def _make_silent_wav(ms=150, rate=24000):
