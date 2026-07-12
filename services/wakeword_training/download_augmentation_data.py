@@ -16,7 +16,13 @@ use only."
 The notebook itself only downloads one segment of AudioSet ("bal_train09.tar")
 as a quickstart-sized example, noting "for full-scale training, it's
 recommended to download the entire dataset" -- this script matches that same
-one-segment default rather than inventing a larger scope.
+scope (a fixed-size subset, not the full ~22k-clip balanced split) rather than
+inventing a larger one. NOTE: the notebook's literal tar-shard URL
+(agkphysics/AudioSet/resolve/main/data/bal_train09.tar) is defunct -- that
+repo has since been restructured into proper HuggingFace Parquet format
+(data/bal_train/*.parquet, confirmed via the HF API, not guessed), so this
+downloads the same "balanced train" split via `datasets.load_dataset` and
+takes a fixed-size prefix instead of a fixed tar shard.
 
 Must be run with services/wakeword_training/.venv-train/bin/python (needs
 `datasets`/`scipy`, already installed via microWakeWord's own dependencies):
@@ -27,7 +33,6 @@ from __future__ import annotations
 
 import argparse
 import subprocess
-import tarfile
 import zipfile
 from pathlib import Path
 
@@ -35,7 +40,8 @@ import numpy as np
 import scipy.io.wavfile
 
 MIT_RIR_REPO_ID = "davidscripka/MIT_environmental_impulse_responses"
-AUDIOSET_TAR_URL = "https://huggingface.co/datasets/agkphysics/AudioSet/resolve/main/data/bal_train09.tar"
+AUDIOSET_REPO_ID = "agkphysics/AudioSet"
+AUDIOSET_CLIP_LIMIT = 1000  # quickstart-sized subset, matching one old tar shard's rough scale
 FMA_ZIP_URL = "https://huggingface.co/datasets/mchl914/fma_xsmall/resolve/main/fma_xs.zip"
 
 
@@ -62,7 +68,7 @@ def download_mit_rirs(out_dir: Path) -> int:
     return count
 
 
-def download_audioset(work_dir: Path, out_dir: Path) -> int:
+def download_audioset(out_dir: Path, limit: int = AUDIOSET_CLIP_LIMIT) -> int:
     out_dir = Path(out_dir)
     existing = list(out_dir.glob("*.wav")) if out_dir.exists() else []
     if existing:
@@ -70,20 +76,15 @@ def download_audioset(work_dir: Path, out_dir: Path) -> int:
 
     import datasets
 
-    work_dir = Path(work_dir)
-    work_dir.mkdir(parents=True, exist_ok=True)
-    tar_path = work_dir / "bal_train09.tar"
-    if not tar_path.exists():
-        subprocess.run(["curl", "-L", "-o", str(tar_path), AUDIOSET_TAR_URL], check=True)
-    with tarfile.open(tar_path) as tf:
-        tf.extractall(work_dir)
-
-    flac_paths = [str(p) for p in work_dir.glob("**/*.flac")]
-    audioset_dataset = datasets.Dataset.from_dict({"audio": flac_paths})
+    audioset_dataset = datasets.load_dataset(
+        AUDIOSET_REPO_ID, "balanced", split="train", streaming=True
+    )
     audioset_dataset = audioset_dataset.cast_column("audio", datasets.Audio(sampling_rate=16000))
     count = 0
     for row in audioset_dataset:
-        name = Path(row["audio"]["path"]).stem + ".wav"
+        if count >= limit:
+            break
+        name = f"{row['video_id']}.wav"
         _write_16k_wav(out_dir, name, np.asarray(row["audio"]["array"], dtype=np.float32))
         count += 1
     return count
@@ -125,8 +126,8 @@ def main(argv: list[str] | None = None) -> None:
     rir_count = download_mit_rirs(out_dir / "mit_rirs")
     print(f"MIT RIR: {rir_count} clips -> {out_dir / 'mit_rirs'}")
 
-    audioset_count = download_audioset(out_dir / "_audioset_raw", out_dir / "audioset_16k")
-    print(f"AudioSet (bal_train09): {audioset_count} clips -> {out_dir / 'audioset_16k'}")
+    audioset_count = download_audioset(out_dir / "audioset_16k")
+    print(f"AudioSet (balanced train, first {AUDIOSET_CLIP_LIMIT}): {audioset_count} clips -> {out_dir / 'audioset_16k'}")
 
     fma_count = download_fma(out_dir / "_fma_raw", out_dir / "fma_16k")
     print(f"FMA xs: {fma_count} clips -> {out_dir / 'fma_16k'}")
