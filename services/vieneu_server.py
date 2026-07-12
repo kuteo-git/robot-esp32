@@ -33,6 +33,14 @@ MODE = os.environ.get("VIENEU_MODE", "standard")  # standard: v2 GGUF + neucodec
 # Emotion passed into the constructor (per the upstream docs): "natural" (adds the <|emotion_0|> tag)
 # or "storytelling" (no tag -> narrator-style voice).
 EMOTION = os.environ.get("VIENEU_EMOTION", "natural")
+# v3turbo only: which engine backs Vieneu(mode="v3turbo"). "mlx" (default) = the MLX port
+# (Apple Silicon, see vieneu-tts-mlx-conversion-research-en.md). "pytorch" = force MPS (the
+# previous default here). "onnx" = the package's CPU/int8 engine. Rollback: set to "pytorch".
+BACKEND = os.environ.get("VIENEU_BACKEND", "mlx")
+MLX_BACKBONE_WEIGHTS = os.environ.get("VIENEU_MLX_BACKBONE_WEIGHTS", "/Volumes/Data/vieneu-mlx/v3turbo_backbone.safetensors")
+MLX_MOSS_WEIGHTS = os.environ.get("VIENEU_MLX_MOSS_WEIGHTS", "/Volumes/Data/vieneu-mlx/moss_decoder.safetensors")
+_mlx_quant = os.environ.get("VIENEU_MLX_QUANTIZE", "4").strip()
+MLX_QUANTIZE_BITS = int(_mlx_quant) if _mlx_quant else None  # "" or "0" -> fp32
 
 
 def _make_silent_wav(ms=150, rate=24000):
@@ -166,16 +174,26 @@ def _trim_silence(data, keep_ms=180, thr=0.012):
         return data
 
 
-log(f"nạp VieNeu-TTS (mode={MODE}, giọng {VOICE})...")
+log(f"nạp VieNeu-TTS (mode={MODE}, backend={BACKEND}, giọng {VOICE})...")
 # turbo does NOT accept an emotion parameter (only standard does).
 if MODE == "standard":
     tts = Vieneu(mode=MODE, emotion=EMOTION)
 elif MODE == "v3turbo":
-    # v3turbo's own device="auto" only checks torch.cuda (not available on Mac) -> it ALWAYS
-    # falls back to CPU/ONNX (onnx_runtime_lite.py hardcodes CPUExecutionProvider), ignoring the
-    # GPU MPS that's actually available -> much slower (~6-7s/sentence instead of ~3.3s). Force
-    # device=mps to use PyTorch+Metal instead.
-    tts = Vieneu(mode=MODE, device="mps")
+    if BACKEND == "mlx":
+        tts = Vieneu(
+            mode=MODE, backend="mlx",
+            mlx_backbone_weights=MLX_BACKBONE_WEIGHTS,
+            mlx_moss_weights=MLX_MOSS_WEIGHTS,
+            mlx_quantize_bits=MLX_QUANTIZE_BITS,
+        )
+    elif BACKEND == "pytorch":
+        # v3turbo's own device="auto" only checks torch.cuda (not available on Mac) -> it ALWAYS
+        # falls back to CPU/ONNX (onnx_runtime_lite.py hardcodes CPUExecutionProvider), ignoring the
+        # GPU MPS that's actually available -> much slower (~6-7s/sentence instead of ~3.3s). Force
+        # device=mps to use PyTorch+Metal instead.
+        tts = Vieneu(mode=MODE, device="mps")
+    else:
+        tts = Vieneu(mode=MODE, backend=BACKEND)
 else:
     tts = Vieneu(mode=MODE)
 
@@ -292,7 +310,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 @app.get("/health")
 def health():
     keys = list(getattr(tts, "_preset_voices", {}).keys())
-    return {"status": "ok", "voice": VOICE, "mode": MODE, "emotion": EMOTION,
+    return {"status": "ok", "voice": VOICE, "mode": MODE, "backend": BACKEND, "emotion": EMOTION,
             "voices": keys, "cached": list(_voice_cache.keys())}
 
 
