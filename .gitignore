@@ -49,3 +49,4 @@ services/pytube_cache/
 
 # Git worktrees for isolated agent workspaces
 .worktrees/
+.superpowers/
