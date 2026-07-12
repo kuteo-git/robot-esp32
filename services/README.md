@@ -12,7 +12,7 @@ For full install steps, see the repo root [`SETUP.md`](../SETUP.md). This file i
 | Service | File | Launcher | Port | Env | Purpose |
 |---|---|---|---|---|---|
 | **Whisper (STT)** | `whisper_server.py` | `run_whisper.sh` | 8001 | `.venv` | Speech-to-text. Default backend is MLX (Apple Silicon) with a local PhoWhisper model; falls back to `transformers`. Required for the voice loop. |
-| **VieNeu (TTS)** | `vieneu_server.py` | `run_vieneu.sh` | 8002 | `.venv` | Vietnamese text-to-speech (multiple voices). Required for the voice loop. |
+| **VieNeu (TTS)** | `vieneu_server.py` | `run_vieneu.sh` | 8002 | `.venv` | Vietnamese text-to-speech (multiple voices). Required for the voice loop. v3turbo mode defaults to the MLX backend (`VIENEU_BACKEND=mlx`); set `pytorch`/`onnx` to roll back. |
 | **weather** | `weather_server.py` | `run_weather.sh` | 8010 | conda `xiaozhi` | Scrapes a weather site → `get_weather` tool. Edit the location in the file. |
 | **power-outage** | `power_outage_server.py` | `run_poweroutage.sh` | 8011 | conda `xiaozhi` | Scrapes a power-outage schedule → `get_power_outage` tool. Vietnam-region specific. |
 | **search** | `search_server.py` | `run_search.sh` | 8012 | conda `xiaozhi` | DuckDuckGo web search. No config. |
