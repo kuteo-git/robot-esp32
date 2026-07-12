@@ -198,8 +198,16 @@ else:
     tts = Vieneu(mode=MODE)
 
 
+# Voice used when a requested name can't be resolved at all (unmatched, or the preset
+# lookup itself raises) -- picked over the package's own bare default so an unexpected/
+# renamed catalog (e.g. after a vieneu package upgrade changes the voice roster) still
+# lands on a known-good voice instead of whatever the package happens to default to.
+FALLBACK_VOICE = os.environ.get("VIENEU_FALLBACK_VOICE", "Thục Đoan")
+
+
 def _resolve_voice(name):
-    """Match a preset voice, tolerating naming differences between standard/turbo ('Doan' -> 'Thục Đoan (...)')."""
+    """Match a preset voice, tolerating naming differences between standard/turbo ('Doan' -> 'Thục Đoan (...)').
+    Falls back to FALLBACK_VOICE (not the package's bare default) if nothing matches or resolution raises."""
     try:
         return tts.get_preset_voice(name)
     except Exception:
@@ -215,7 +223,19 @@ def _resolve_voice(name):
     if match:
         log(f"giọng '{name}' -> khớp '{match}'")
         return tts.get_preset_voice(match)
-    log(f"giọng '{name}' KHÔNG có, dùng default. Danh sách: {keys}", level="WARNING")
+
+    log(f"giọng '{name}' KHÔNG có, thử fallback '{FALLBACK_VOICE}'. Danh sách: {keys}", level="WARNING")
+    try:
+        return tts.get_preset_voice(FALLBACK_VOICE)
+    except Exception:
+        pass
+    want_fb = _norm(FALLBACK_VOICE)
+    fb_match = next((k for k in keys if want_fb in _norm(k)), None)
+    if fb_match:
+        log(f"fallback '{FALLBACK_VOICE}' -> khớp '{fb_match}'")
+        return tts.get_preset_voice(fb_match)
+
+    log(f"fallback '{FALLBACK_VOICE}' cũng KHÔNG có -> dùng default gói", level="WARNING")
     return tts.get_preset_voice()
 
 
