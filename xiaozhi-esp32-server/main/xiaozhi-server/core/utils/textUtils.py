@@ -71,8 +71,10 @@ def is_punctuation_or_emoji(char):
         "-",
         "－",  # 英文连字符 + 中文全角横线
         "、",  # 中文顿号
-        "[",
-        "]",  # 方括号
+        # NOTE: half-width [ ] are intentionally NOT stripped. They delimit VieNeu emotion cues
+        # ([cười]/[thở dài]/[hắng giọng]); a cue landing at a chunk edge would otherwise lose a
+        # bracket (e.g. "[thở dài]." -> "[thở dài"), corrupting the tag in the displayed text and
+        # leaning on the TTS server's _fix_cues repair. Full-width 【】 aren't used for cues -> still stripped.
         "【",
         "】",  # 中文方括号
     }

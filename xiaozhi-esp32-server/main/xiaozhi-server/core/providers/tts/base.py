@@ -93,11 +93,14 @@ class TTSProviderBase(ABC):
             ";",
             "：",
         )
+        # First chunk of a reply: split at the earliest SENTENCE-END only (no comma/~/、).
+        # Splitting the opener at its first comma shaved ~0.5-1s off first-audio, but that
+        # latency is already hidden by the thinking-filler and cheap MLX generation, while the
+        # comma-cut tore a single sentence into two independently-synthesized segments -> an
+        # audible prosody reset mid-sentence. Keeping only sentence-enders emits the first WHOLE
+        # sentence as soon as it lands (still fast, because it uses the EARLIEST ender, not the
+        # latest), so the opener stays smooth.
         self.first_sentence_punctuations = (
-            "，",
-            "~",
-            "、",
-            ",",
             "。",
             ".",
             "？",
