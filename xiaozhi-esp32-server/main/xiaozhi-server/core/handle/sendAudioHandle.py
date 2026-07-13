@@ -336,12 +336,6 @@ async def send_tts_message(conn: "ConnectionHandler", state, text=None):
             message["text"] = _render_cues(clean)
         else:
             message["text"] = textUtils.check_emoji(clean)
-        # Strip a trailing decorative ~ from the DISPLAYED text (the persona likes "nha~"). This
-        # only touches the chat text; the audio still receives the ~ (VieNeu draws out the final
-        # syllable) via the separate TTS path (to_tts_stream).
-        stripped = re.sub(r"[\s~～]+$", "", message["text"])
-        if stripped:
-            message["text"] = stripped
 
     # TTS播放结束
     if state == "stop":
