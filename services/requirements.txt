@@ -251,10 +251,10 @@ uvicorn==0.49.0
 uvloop==0.22.1
 vector-quantize-pytorch==1.17.8
 vertexai==1.71.1
-# Editable install from the local checkout (not PyPI): the MLX backend
-# (src/vieneu/mlx/) is uncommitted local work, not published. Content is
-# vieneu 3.2.3 (see that repo's pyproject.toml) + the MLX additions.
--e /Users/lucnguyen/Documents/git/VieNeu-TTS[gpu,mlx]
+# Pinned to the vieneu-tts-mlx fork's v3.0.5 tag (not PyPI): the MLX backend
+# targets the VieNeu-TTS v3.0.5-era checkpoint. See
+# https://github.com/kuteo-git/VieNeu-TTS-MLX for the port itself.
+vieneu[gpu,mlx] @ git+https://github.com/kuteo-git/VieNeu-TTS-MLX.git@v3.0.5
 watchfiles==1.2.0
 websocket-client==1.9.0
 websockets==14.2
