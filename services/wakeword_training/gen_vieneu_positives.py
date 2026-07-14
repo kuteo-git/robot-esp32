@@ -29,7 +29,7 @@ VOICES = [
     "Trúc Ly", "Xuân Vĩnh", "Trọng Hữu", "Bình An", "Ngọc Linh",
 ]
 # A few natural framings of the wake phrase so it isn't one fixed utterance per voice.
-PHRASES = ["An An ơi", "An An ơi!", "Ê An An ơi", "An An ơi, ", "An An ơi ơi"]
+PHRASES = ["Na Bi ơi", "Na Bi ơi!", "Ê Na Bi ơi", "Na Bi ơi, ", "Na Bi ơi ơi"]
 
 
 def _synth(text: str, voice: str) -> bytes:

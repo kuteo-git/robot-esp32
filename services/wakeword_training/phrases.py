@@ -1,20 +1,21 @@
-POSITIVE_PHRASE = "An An ơi"
+POSITIVE_PHRASE = "Na Bi ơi"
 
-# Phonetically close to "An An ơi" (and the previous wake word) — trained as
-# explicit negatives so the model only fires on the DOUBLED "An An ơi", not on
-# single "an", other doubled names, or near-miss household speech.
+# Phonetically close to "Na Bi ơi" (+ the previous wake words) — trained as
+# explicit negatives so the model fires ONLY on the full "Na Bi ơi", not on either
+# half alone or near-miss syllables.
 HARD_NEGATIVE_PHRASES = [
-    "An ơi",         # single (not doubled) — the key discriminator
-    "An An",         # doubled but no "ơi"
-    "ăn cơm chưa",   # "ăn" collides with "an"
-    "bình an",
-    "an toàn",
-    "an ninh",
-    "Ba ba ơi",      # a different doubled name
-    "Hân Hân ơi",    # near-doubled name
-    "Lan ơi",
-    "Nam ơi",
-    "Mai ơi",        # the previous wake word -> must NOT fire
+    "Na ơi",         # first syllable alone
+    "Bi ơi",         # second syllable alone
+    "Na Bi",         # no "ơi"
+    "Ba Bi ơi",      # near-miss first syllable
+    "Ma Bi ơi",
+    "La Bi ơi",
+    "Na Vi ơi",      # near-miss second syllable
+    "Na Mi ơi",
+    "Na Ni ơi",
+    "Nam Bi ơi",
+    "Mai ơi",        # previous wake words -> must NOT fire
+    "An An ơi",
 ]
 
 # Everyday Vietnamese household speech, used as negatives so the model doesn't
