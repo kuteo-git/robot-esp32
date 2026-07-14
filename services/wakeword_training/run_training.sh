@@ -59,7 +59,8 @@ python extract_features.py \
   --rir-dir data/mit_rirs \
   --background-dir data/fma_16k \
   --background-dir data/audioset_16k \
-  --background-dir data/negative_vi/vi_speech
+  --background-dir data/negative_vi/vi_speech \
+  --background-dir data/real_eval/neg_env_train_src
 
 # Step B: build the training config (our features + data/negative_standard)
 # and invoke the real training entry point, mixednet hyperparameters taken

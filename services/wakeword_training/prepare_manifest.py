@@ -146,6 +146,7 @@ def main(argv: list[str] | None = None) -> None:
         "data/negative_vi/robot_voice",  # robot's own VieNeu voice
         "data/negative_vi/vi_speech",    # real Vietnamese speech (FLEURS vi)
         "data/negative_vi/real_neg_aug", # augmented real near-miss recordings (Mẹ ơi/Tùng ơi...)
+        "data/negative_vi/real_env_neg",  # user's actual fan / meeting-room noise (the real culprits)
     ]
     parser.add_argument("--positive-dir", default="data/positive")
     parser.add_argument(
