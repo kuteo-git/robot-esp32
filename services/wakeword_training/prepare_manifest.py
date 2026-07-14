@@ -140,7 +140,8 @@ def main(argv: list[str] | None = None) -> None:
         )
     )
     default_negative_dirs = [
-        "data/negative_vi/hard",
+        "data/negative_vi/hard_anan_aug",  # "An An ơi" near-misses (An ơi / An An / ăn / bình an / Mai ơi)
+        "data/negative_vi/reject_maioi",   # the old wake word -> must not fire
         "data/negative_vi/generic",
         "data/negative_vi/chimes",       # robot's own chimes (fixes session-end loop)
         "data/negative_vi/robot_voice",  # robot's own VieNeu voice

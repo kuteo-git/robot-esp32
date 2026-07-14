@@ -29,7 +29,7 @@ VOICES = [
     "Trúc Ly", "Xuân Vĩnh", "Trọng Hữu", "Bình An", "Ngọc Linh",
 ]
 # A few natural framings of the wake phrase so it isn't one fixed utterance per voice.
-PHRASES = ["Mai ơi", "Mai ơi!", "Mai ơi ơi", "Mai ơi, ", "Ê Mai ơi"]
+PHRASES = ["An An ơi", "An An ơi!", "Ê An An ơi", "An An ơi, ", "An An ơi ơi"]
 
 
 def _synth(text: str, voice: str) -> bytes:
@@ -69,5 +69,5 @@ def gen_vieneu_positives(out_dir: str, variants_per_clip: int = 8, seed: int = 0
 
 
 if __name__ == "__main__":
-    n = gen_vieneu_positives("data/positive/vieneu_prod", variants_per_clip=8)
+    n = gen_vieneu_positives("data/positive/vieneu_prod", variants_per_clip=60)
     print(f"wrote {n} production-voice positives")
