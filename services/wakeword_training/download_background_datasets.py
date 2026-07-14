@@ -50,9 +50,13 @@ from __future__ import annotations
 import argparse
 import zipfile
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
+import numpy as np
+import soundfile as sf
 from huggingface_hub import hf_hub_download
+
+TARGET_SAMPLE_RATE = 16000
 
 # Confirmed against vendor/microWakeWord/notebooks/basic_training_notebook.ipynb
 # (cell 8) and corroborated live via the HF datasets API, which lists these
@@ -101,15 +105,77 @@ def _download_and_extract(filename: str, out_dir: Path) -> None:
         zf.extractall(out_dir)
 
 
+def normalize_to_16k_mono(src_path: str, dst_path: str) -> str:
+    """Read any WAV, downmix to mono, resample to 16 kHz, write PCM16."""
+    audio, sr = sf.read(src_path, dtype="float32")
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
+    if sr != TARGET_SAMPLE_RATE:
+        import librosa  # lazy: only needed off the 16k happy path
+
+        audio = librosa.resample(audio, orig_sr=sr, target_sr=TARGET_SAMPLE_RATE)
+    sf.write(dst_path, audio.astype("float32"), TARGET_SAMPLE_RATE, subtype="PCM_16")
+    return dst_path
+
+
+def fetch_vi_speech(
+    out_dir: str,
+    max_clips: int = 1000,
+    split: str = "test",
+    loader: Iterable[dict] | None = None,
+) -> int:
+    """Write up to ``max_clips`` real Vietnamese-speech WAVs (16 kHz mono) as
+    negatives, so the model rejects genuine Vietnamese conversation/TV — the
+    diversity TTS can't provide.
+
+    Source: Google FLEURS ``vi_vn`` (public, no auth, already 16 kHz). ``loader``
+    is injectable (an iterable of ``{"audio": {"array", "sampling_rate"}}`` dicts)
+    so the write/normalize path is testable without a network download.
+    """
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    if loader is None:
+        from datasets import load_dataset
+
+        loader = load_dataset("google/fleurs", "vi_vn", split=split, streaming=True)
+    written = 0
+    for example in loader:
+        if written >= max_clips:
+            break
+        audio = np.asarray(example["audio"]["array"], dtype="float32")
+        sr = int(example["audio"]["sampling_rate"])
+        if sr != TARGET_SAMPLE_RATE:
+            import librosa
+
+            audio = librosa.resample(audio, orig_sr=sr, target_sr=TARGET_SAMPLE_RATE)
+        sf.write(str(out / f"fleurs_vi_{written:05d}.wav"), audio, TARGET_SAMPLE_RATE, subtype="PCM_16")
+        written += 1
+    return written
+
+
 def main(
     argv: list[str] | None = None,
     download_and_extract: Callable[[str, Path], None] = _download_and_extract,
 ) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out-dir", default="data/negative_standard")
+    parser.add_argument(
+        "--vi-speech",
+        action="store_true",
+        help="Instead of the standard feature sets, fetch real Vietnamese speech "
+        "(FLEURS vi) as raw 16k WAV negatives into <out-dir>/vi_speech.",
+    )
+    parser.add_argument("--max-clips", type=int, default=1000, help="Max FLEURS vi clips for --vi-speech.")
+    parser.add_argument("--split", default="test", help="FLEURS split for --vi-speech (test is smallest).")
     args = parser.parse_args(argv)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.vi_speech:
+        vi_dir = out_dir / "vi_speech"
+        n = fetch_vi_speech(str(vi_dir), max_clips=args.max_clips, split=args.split)
+        print(f"Wrote {n} FLEURS vi speech negatives to {vi_dir}")
+        return
 
     for filename in NEGATIVE_DATASET_FILENAMES:
         download_and_extract(filename, out_dir)

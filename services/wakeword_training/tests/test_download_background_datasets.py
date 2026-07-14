@@ -1,10 +1,31 @@
+import numpy as np
 import pytest
+import soundfile as sf
 
 from download_background_datasets import (
     NEGATIVE_DATASET_FILENAMES,
+    fetch_vi_speech,
     main,
+    normalize_to_16k_mono,
     validate_dataset_dir,
 )
+
+
+def test_normalize_vi_clip_to_16k_mono(tmp_path):
+    src = tmp_path / "a.wav"
+    sf.write(src, np.zeros((8000, 2), "float32"), 8000)  # 8kHz stereo
+    out = normalize_to_16k_mono(str(src), str(tmp_path / "o.wav"))
+    data, sr = sf.read(out)
+    assert sr == 16000 and data.ndim == 1
+
+
+def test_fetch_vi_speech_writes_clips_from_injected_loader(tmp_path):
+    fake = [{"audio": {"array": [0.0] * 16000, "sampling_rate": 16000}} for _ in range(5)]
+    n = fetch_vi_speech(str(tmp_path), max_clips=3, loader=fake)
+    assert n == 3
+    assert len(list(tmp_path.glob("*.wav"))) == 3
+    _, sr = sf.read(next(tmp_path.glob("*.wav")))
+    assert sr == 16000
 
 
 def _make_ragged_mmap_dir(path):
