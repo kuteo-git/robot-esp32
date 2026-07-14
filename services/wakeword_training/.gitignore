@@ -1,6 +1,6 @@
 .venv-train/
 vendor/
-data/
+data
 models/
 reports/
 *.pyc
