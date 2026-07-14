@@ -47,14 +47,18 @@ source .venv-train/bin/activate
 # the invocation below). This script does not source or wire up such
 # datasets itself.
 # ---------------------------------------------------------------------------
-echo "WARNING: training without RIR/background-noise augmentation (--rir-dir/--background-dir not supplied)." >&2
-echo "         AddBackgroundNoise/RIR are no-ops and SpecAugment masking is off in this default run." >&2
-echo "         Supply real datasets to extract_features.py's --rir-dir/--background-dir before training a production-quality model." >&2
-
-# Step A: feature extraction (raw WAV -> Ragged Mmap spectrogram features).
+# Step A: feature extraction (raw WAV -> Ragged Mmap spectrogram features), WITH
+# RIR + background-noise augmentation ON. mit_rirs = room impulse responses;
+# fma_16k + audioset_16k = background noise mixed in at -5..+10 dB SNR (see
+# extract_features.build_augmenter). This makes the negatives (chimes, robot
+# voice, speech) sound like they do through the device's mic in a real room --
+# the augmentation the Phase-1 model was trained WITHOUT.
 python extract_features.py \
   --manifest data/manifest.json \
-  --out-dir data/features
+  --out-dir data/features \
+  --rir-dir data/mit_rirs \
+  --background-dir data/fma_16k \
+  --background-dir data/audioset_16k
 
 # Step B: build the training config (our features + data/negative_standard)
 # and invoke the real training entry point, mixednet hyperparameters taken

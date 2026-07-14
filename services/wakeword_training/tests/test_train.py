@@ -101,10 +101,11 @@ def test_build_config_matches_notebook_cell_9_defaults(tmp_path):
     assert config["negative_class_weight"] == [20]
     assert config["learning_rates"] == [0.001]
     assert config["batch_size"] == 128
-    assert config["time_mask_max_size"] == [0]
-    assert config["time_mask_count"] == [0]
-    assert config["freq_mask_max_size"] == [0]
-    assert config["freq_mask_count"] == [0]
+    # Modest SpecAugment masking ON for the retrain (was [0] in Phase-1).
+    assert config["time_mask_max_size"] == [5]
+    assert config["time_mask_count"] == [1]
+    assert config["freq_mask_max_size"] == [3]
+    assert config["freq_mask_count"] == [1]
     assert config["eval_step_interval"] == 500
     assert config["clip_duration_ms"] == 1500
     assert config["target_minimization"] == 0.9

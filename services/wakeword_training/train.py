@@ -217,10 +217,14 @@ def build_config(
         "negative_class_weight": [20],
         "learning_rates": [0.001],
         "batch_size": batch_size,
-        "time_mask_max_size": [0],
-        "time_mask_count": [0],
-        "freq_mask_max_size": [0],
-        "freq_mask_count": [0],
+        # Modest SpecAugment masking ON (Phase-1 trained with it off). Masking a
+        # few time/freq bins per clip regularizes the model toward a more
+        # conservative decision boundary -- helpful given the goal is fewer
+        # false-accepts on the newly-added chime/robot-voice/speech negatives.
+        "time_mask_max_size": [5],
+        "time_mask_count": [1],
+        "freq_mask_max_size": [3],
+        "freq_mask_count": [1],
         "eval_step_interval": eval_step_interval,
         "clip_duration_ms": clip_duration_ms,
         "target_minimization": 0.9,

@@ -139,7 +139,13 @@ def main(argv: list[str] | None = None) -> None:
             "see this file's module docstring for the full reasoning."
         )
     )
-    default_negative_dirs = ["data/negative_vi/hard", "data/negative_vi/generic"]
+    default_negative_dirs = [
+        "data/negative_vi/hard",
+        "data/negative_vi/generic",
+        "data/negative_vi/chimes",       # robot's own chimes (fixes session-end loop)
+        "data/negative_vi/robot_voice",  # robot's own VieNeu voice
+        "data/negative_vi/vi_speech",    # real Vietnamese speech (FLEURS vi)
+    ]
     parser.add_argument("--positive-dir", default="data/positive")
     parser.add_argument(
         "--negative-dir",
