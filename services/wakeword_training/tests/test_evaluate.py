@@ -157,3 +157,27 @@ def test_main_rejects_neither_manifest_nor_directory_mode(tmp_path):
             ],
             scorer_factory=lambda model_path: _FakeScorer(model_path),
         )
+
+
+def test_evaluate_realistic_detection_and_fa_per_hour(tmp_path):
+    pos = tmp_path / "pos"
+    pos.mkdir()
+    neg = tmp_path / "neg_chimes"
+    neg.mkdir()
+    sf.write(pos / "pos_1.wav", np.zeros(16000, "int16"), 16000)   # 1s, _FakeScorer -> 0.9
+    sf.write(neg / "clip_1.wav", np.zeros(32000, "int16"), 16000)  # 2s, no 'pos' -> 0.1
+
+    report = evaluate.evaluate_realistic(
+        _FakeScorer("m"), str(pos), [str(neg)], [0.05, 0.5]
+    )
+
+    t05 = report["thresholds"]["0.05"]
+    assert t05["detection_rate"] == 1.0                          # 0.9 >= 0.05
+    src05 = t05["sources"]["neg_chimes"]
+    assert src05["clips"] == 1
+    assert src05["false_accepts"] == 1                           # 0.1 >= 0.05
+    assert src05["fa_per_hour"] == 1800.0                        # 1 FA over 2s = 1/(2/3600)
+
+    t5 = report["thresholds"]["0.5"]
+    assert t5["sources"]["neg_chimes"]["false_accepts"] == 0     # 0.1 < 0.5
+    assert t5["overall_fa_per_hour"] == 0.0

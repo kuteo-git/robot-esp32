@@ -160,6 +160,60 @@ def _load_manifest_split(manifest_path: str, split: str) -> tuple[list[str], lis
     return list(split_data.get("positive", [])), list(split_data.get("negative", []))
 
 
+def _wav_duration_seconds(path: str) -> float:
+    import soundfile as sf
+
+    info = sf.info(str(path))
+    return info.frames / info.samplerate
+
+
+def evaluate_realistic(scorer, positives_dir: str, negatives_dirs: list[str], thresholds: list[float]) -> dict:
+    """Operational eval for the ship gate.
+
+    positives_dir -> real "Mai ơi" recordings; each ``negatives_dirs`` entry is a
+    named source (e.g. neg_chimes, neg_robot_voice). For every threshold, reports
+    the positive DETECTION RATE and, per negative source, the false-accept count
+    and FALSE-ACCEPTS PER HOUR (using each source's total audio duration) -- the
+    metric that actually matters in deployment.
+    """
+    pos_paths = sorted(str(p) for p in Path(positives_dir).glob("*.wav"))
+    pos_scores = score_paths(scorer, pos_paths)
+
+    sources = []  # (name, scores, total_duration_seconds)
+    for d in negatives_dirs:
+        d = Path(d)
+        paths = sorted(str(p) for p in d.glob("*.wav"))
+        scores = score_paths(scorer, paths)
+        duration = sum(_wav_duration_seconds(p) for p in paths)
+        sources.append((d.name, scores, duration))
+
+    report: dict = {"thresholds": {}}
+    for th in thresholds:
+        detected = sum(1 for s in pos_scores if s >= th)
+        src_report = {}
+        total_fa = 0
+        total_hours = 0.0
+        for name, scores, duration in sources:
+            fa = sum(1 for s in scores if s >= th)
+            hours = duration / 3600.0
+            src_report[name] = {
+                "clips": len(scores),
+                "false_accepts": fa,
+                "duration_hours": round(hours, 4),
+                "fa_per_hour": round(fa / hours, 3) if hours > 0 else 0.0,
+            }
+            total_fa += fa
+            total_hours += hours
+        report["thresholds"][f"{th}"] = {
+            "num_positive": len(pos_scores),
+            "num_detected": detected,
+            "detection_rate": round(detected / len(pos_scores), 4) if pos_scores else 0.0,
+            "sources": src_report,
+            "overall_fa_per_hour": round(total_fa / total_hours, 3) if total_hours > 0 else 0.0,
+        }
+    return report
+
+
 def main(
     argv: list[str] | None = None,
     scorer_factory: Callable[[str], object] = TFLiteScorer,
@@ -168,6 +222,27 @@ def main(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--model", required=True)
+    parser.add_argument(
+        "--realistic",
+        action="store_true",
+        help="Operational ship-gate eval: --positives (real Mai ơi dir) + one or "
+        "more --negatives source dirs + --thresholds. Reports detection rate and "
+        "per-source false-accepts/hour to --report-out.",
+    )
+    parser.add_argument("--positives", help="Positive (real Mai ơi) dir for --realistic.")
+    parser.add_argument(
+        "--negatives",
+        action="append",
+        default=[],
+        help="Negative source dir for --realistic (repeatable; each reported separately).",
+    )
+    parser.add_argument(
+        "--thresholds",
+        type=float,
+        nargs="+",
+        default=[0.3, 0.5, 0.7, 0.9],
+        help="Thresholds to sweep in --realistic mode.",
+    )
     parser.add_argument(
         "--manifest",
         help="Path to manifest.json (Task 8's prepare_manifest.py output). "
@@ -191,6 +266,24 @@ def main(
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--report-out", required=True)
     args = parser.parse_args(argv)
+
+    if args.realistic:
+        if not args.positives or not args.negatives:
+            parser.error("--realistic requires --positives and at least one --negatives.")
+        scorer = scorer_factory(args.model)
+        report = evaluate_realistic(scorer, args.positives, args.negatives, args.thresholds)
+        report_path = Path(args.report_out)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False))
+        for th, r in report["thresholds"].items():
+            worst = max(
+                (s["fa_per_hour"] for s in r["sources"].values()), default=0.0
+            )
+            print(
+                f"t={th}: detection={r['detection_rate']:.2f} "
+                f"overall_FA/hr={r['overall_fa_per_hour']} worst_source_FA/hr={worst}"
+            )
+        return
 
     manifest_mode = args.manifest is not None or args.split is not None
     directory_mode = args.positive_dir is not None or args.negative_dir is not None
