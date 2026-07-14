@@ -208,23 +208,32 @@ def build_config(
     ]
     features.extend(discover_negative_standard(negative_standard_dir))
 
+    # Per-phase config lists must all match len(training_steps). Single-phase (the
+    # default [10000]) keeps the original values; a multi-phase schedule (the "big
+    # run", e.g. --training-steps 50000 30000 20000) gets a DECAYING learning rate so
+    # the extra steps actually refine the model instead of just fluctuating at a
+    # constant LR (a model this small has already converged by ~10k at 0.001).
+    n_phases = len(training_steps)
+    _lr_options = [0.001, 0.0005, 0.0002, 0.0001, 0.00005, 0.00002]
+    learning_rates = (_lr_options + [_lr_options[-1]] * n_phases)[:n_phases]
+
     config = {
         "window_step_ms": 10,
         "train_dir": train_dir,
         "features": features,
         "training_steps": training_steps,
-        "positive_class_weight": [1],
-        "negative_class_weight": [20],
-        "learning_rates": [0.001],
+        "positive_class_weight": [1] * n_phases,
+        "negative_class_weight": [20] * n_phases,
+        "learning_rates": learning_rates,
         "batch_size": batch_size,
         # Modest SpecAugment masking ON (Phase-1 trained with it off). Masking a
         # few time/freq bins per clip regularizes the model toward a more
         # conservative decision boundary -- helpful given the goal is fewer
         # false-accepts on the newly-added chime/robot-voice/speech negatives.
-        "time_mask_max_size": [5],
-        "time_mask_count": [1],
-        "freq_mask_max_size": [3],
-        "freq_mask_count": [1],
+        "time_mask_max_size": [5] * n_phases,
+        "time_mask_count": [1] * n_phases,
+        "freq_mask_max_size": [3] * n_phases,
+        "freq_mask_count": [1] * n_phases,
         "eval_step_interval": eval_step_interval,
         "clip_duration_ms": clip_duration_ms,
         "target_minimization": 0.9,
