@@ -53,6 +53,7 @@ needing `conda` on `PATH` (override with `CONDA_BASE_DIR` if your install is in 
 | `_find_conda_env.sh` | Resolves a conda env's `python` path without relying on `PATH` (used by the launchers). |
 | `convert_phowhisper_mlx.sh` | Converts a PhoWhisper (Hugging Face) model to MLX for the Whisper server's MLX backend. |
 | `r1sh.py` | Runs a single shell command on a PHICOMM R1 over its WebSocket shell (port 8080). Set `R1_IP`. |
+| `wakeword_training/` | microWakeWord pipeline for the custom **"Na Bi ơi"** wake word used by the self-built Android client (venv `.venv-train`). Flow: `gen_vieneu_positives.py` (synthetic positives via the VieNeu server) + `prep_real_nabi.py` (trim real recordings, hold out an eval split) → `prepare_manifest.py` → `run_keeper.sh` (feature extraction with RIR/background/fan noise → `train.py` → `evaluate.py`). Exports `models/mai_oi.tflite`, copied to the app's `assets/mai_oi/`. |
 | `requirements.txt` | Dependencies for `services/.venv` (Whisper, VieNeu, and the helper services). |
 | `app_pytube_requirement.txt` | Extra dependencies for the pytube service (installed into conda `base`). |
 
