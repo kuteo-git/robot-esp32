@@ -920,6 +920,16 @@ class ConnectionHandler:
         # 更新系统prompt至上下文
         self.dialogue.update_system_message(self.prompt)
 
+    def chat_turn(self, query):
+        """Entry point for a top-level chat turn. Guarantees the thinking-loop sound is
+        always stopped once the turn concludes on every exit path of chat() -- including
+        early returns and LLM/stream errors -- without threading a stop call through each
+        of chat()'s individual return points."""
+        try:
+            return self.chat(query)
+        finally:
+            self.tts.stop_thinking_loop()
+
     def chat(self, query, depth=0):
         # 保存当前任务的sentence_id到局部变量，避免被新任务覆盖
         current_sentence_id = None
@@ -1567,7 +1577,7 @@ class ConnectionHandler:
         """Chat with the user and then close the connection"""
         try:
             # Use the existing chat method
-            self.chat(text)
+            self.chat_turn(text)
 
             # After chat is complete, close the connection
             self.close_after_chat = True

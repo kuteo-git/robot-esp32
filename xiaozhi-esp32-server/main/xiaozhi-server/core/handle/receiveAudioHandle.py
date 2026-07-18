@@ -93,7 +93,7 @@ async def startToChat(conn: "ConnectionHandler", text):
     # 准备开始新会话
     conn.client_abort = False
 
-    conn.executor.submit(conn.chat, actual_text)
+    conn.executor.submit(conn.chat_turn, actual_text)
 
 
 async def no_voice_close_connect(conn: "ConnectionHandler", have_voice):
