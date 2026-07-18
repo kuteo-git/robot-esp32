@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import uuid
 import queue
 import asyncio
@@ -7,6 +8,7 @@ import threading
 import traceback
 import concurrent.futures
 
+from pydub import AudioSegment
 from core.utils import p3
 from datetime import datetime
 from core.utils import textUtils
@@ -28,6 +30,8 @@ from core.providers.tts.dto.dto import (
 
 TAG = __name__
 logger = setup_logging()
+
+_THINKING_LOOP_PCM_CACHE = {}
 
 
 class TTSProviderBase(ABC):
@@ -127,6 +131,18 @@ class TTSProviderBase(ABC):
 
     def handle_audio_file(self, file_audio: bytes, text):
         self.before_stop_play_files.append((file_audio, text))
+
+    def _get_thinking_loop_pcm(self, sound_file):
+        """Decode+resample the thinking-loop sound to this connection's sample rate once,
+        cached by (path, sample_rate) since the same clip is reused across turns/connections."""
+        key = (sound_file, self.conn.sample_rate)
+        pcm = _THINKING_LOOP_PCM_CACHE.get(key)
+        if pcm is None:
+            audio = AudioSegment.from_file(sound_file)
+            audio = audio.set_channels(1).set_frame_rate(self.conn.sample_rate).set_sample_width(2)
+            pcm = audio.raw_data
+            _THINKING_LOOP_PCM_CACHE[key] = pcm
+        return pcm
 
     def to_tts_stream(self, text, opus_handler: Callable[[bytes], None] = None) -> None:
         # 保留原始文本用于显示/上报
