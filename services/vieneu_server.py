@@ -27,8 +27,6 @@ import numpy as np
 from datetime import datetime
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-import subprocess
-import threading
 from fastapi.responses import Response
 from vieneu import Vieneu
 import uvicorn
@@ -65,6 +63,15 @@ MLX_BACKBONE_WEIGHTS = os.environ.get("VIENEU_MLX_BACKBONE_WEIGHTS", _mlx_weight
 MLX_MOSS_WEIGHTS = os.environ.get("VIENEU_MLX_MOSS_WEIGHTS", str(_MODELS_DIR / "vieneu-mlx" / "moss_decoder.safetensors"))  # same MOSS decoder for both checkpoints, unaffected by MLX_CHECKPOINT
 _mlx_quant = os.environ.get("VIENEU_MLX_QUANTIZE", "4").strip()
 MLX_QUANTIZE_BITS = int(_mlx_quant) if _mlx_quant and _mlx_quant != "0" else None  # "" or "0" -> fp32
+
+# v3turbo speaking-style tokens (see configuration_v3_turbo.py's style_labels). Only the
+# "update" MLX checkpoint (and the pytorch/onnx v3turbo engines) actually resolve these --
+# the "legacy" checkpoint's engine accepts `style` but ignores it (voice identity is a
+# reserved-id token there, there's no separate style axis). Passing it regardless is
+# harmless either way (every backend's infer() either uses it or swallows it via **kwargs),
+# so callers that don't care about style (e.g. the robot) just omit the field.
+STYLE_LABELS = {"natural": "tu_nhien", "storytelling": "doc_truyen", "news": "tin_tuc"}
+STYLE_EFFECTIVE = not (MODE == "v3turbo" and BACKEND == "mlx" and MLX_CHECKPOINT == "legacy")
 
 
 def _make_silent_wav(ms=150, rate=24000):
@@ -364,51 +371,11 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 def health():
     keys = list(getattr(tts, "_preset_voices", {}).keys())
     resp = {"status": "ok", "voice": VOICE, "mode": MODE, "backend": BACKEND, "emotion": EMOTION,
-            "voices": keys, "cached": list(_voice_cache.keys())}
+            "voices": keys, "cached": list(_voice_cache.keys()),
+            "style_labels": STYLE_LABELS, "style_effective": STYLE_EFFECTIVE}
     if MODE == "v3turbo" and BACKEND == "mlx":
         resp["mlx_checkpoint"] = MLX_CHECKPOINT
     return resp
-
-
-# Regenerate the thinking-filler clips in the new voice whenever the voice changes (option B, no
-# caching). The script POSTs {input} without a voice -> uses the (just-changed) default -> all 50
-# fillers come out in the new voice. Runs in the background for ~60s. Disable with FILLER_REGEN_ON_VOICE=0.
-_REGEN_ON_VOICE = os.environ.get("FILLER_REGEN_ON_VOICE", "1") == "1"
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-_REGEN_SCRIPT = os.environ.get(
-    "FILLER_REGEN_SCRIPT",
-    str(_REPO_ROOT / "xiaozhi-esp32-server/main/xiaozhi-server/config/assets/thinking/regen_fillers.sh"),
-)
-_regen_lock = threading.Lock()
-_pending_voice = None   # voice to regen next (voice changed again while a regen is running -> re-run, don't mix)
-
-
-def _regen_fillers_bg():
-    global _pending_voice
-    if not _REGEN_ON_VOICE or not os.path.exists(_REGEN_SCRIPT):
-        return
-    _pending_voice = VOICE
-    if not _regen_lock.acquire(blocking=False):
-        return   # a regen is already running -> the loop below will pick up the new _pending_voice once it's done
-
-    def run():
-        global _pending_voice
-        try:
-            while _pending_voice:
-                target = _pending_voice
-                _pending_voice = None
-                log(f"filler: regen theo giọng '{target}' (~60s nền)...")
-                env = {**os.environ, "FILLER_VOICE": target,   # PIN the voice -> don't mix even if the default changes mid-run
-                       "PATH": "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:" + os.environ.get("PATH", "")}
-                try:
-                    subprocess.run(["bash", _REGEN_SCRIPT], env=env, capture_output=True, timeout=300)
-                    log(f"filler: regen xong ({target})")
-                except Exception as e:
-                    log(f"filler regen lỗi: {e}")
-        finally:
-            _regen_lock.release()
-
-    threading.Thread(target=run, daemon=True).start()
 
 
 @app.get("/voice")
@@ -427,7 +394,6 @@ def set_voice(name: str):
     VOICE = name
     _get_voice_data(name)   # warm the cache for the new voice
     log(f"đổi giọng mặc định -> {name}")
-    _regen_fillers_bg()     # background: regenerate the 50 fillers in the new voice (~60s) -> keeps fillers matching the voice
     return {"ok": True, "voice": VOICE}
 
 
@@ -438,6 +404,11 @@ async def synth(req: Request):
     # Pick the voice from the request (HA sends 'voice'/'vieneu_voice'); empty -> default voice.
     voice_name = (body.get("voice") or body.get("vieneu_voice") or "").strip()
     chosen_voice = _get_voice_data(voice_name)
+    # Optional speaking style ('natural'/'storytelling'/'news', or a raw style_labels key).
+    # Empty -> omit entirely so the engine's own default applies (unchanged behavior for
+    # callers that don't send it).
+    emotion = (body.get("emotion") or body.get("style") or "").strip().lower()
+    style = STYLE_LABELS.get(emotion, emotion) if emotion else None
     # Strip Chinese/CJK characters (VieNeu is a Vietnamese TTS; Chinese text causes a "no speech tokens" error)
     text = re.sub(r"[　-鿿＀-￯]", " ", text).strip()
     # Normalize emotion tags the LLM wrote with missing brackets ([cười / cười] -> [cười])
@@ -447,10 +418,11 @@ async def synth(req: Request):
     if not text:
         log("text rỗng -> trả WAV câm", level="WARNING")
         return Response(content=SILENT_WAV, media_type="audio/wav")
-    log(f"TTS [{voice_name or VOICE}]: {text}")
+    log(f"TTS [{voice_name or VOICE}]{f' ({style})' if style else ''}: {text}")
     t0 = time.perf_counter()
     try:
-        audio = tts.infer(text, voice=chosen_voice)
+        infer_kwargs = {"style": style} if style else {}
+        audio = tts.infer(text, voice=chosen_voice, **infer_kwargs)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
             path = tmp.name
         try:
