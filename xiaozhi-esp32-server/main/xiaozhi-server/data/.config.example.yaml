@@ -44,9 +44,9 @@ exit_goodbye_voice: "config/assets/goodbye.wav"
 # ---------- Chuông báo "tới lượt mày nói" ----------
 listen_start_sound: true
 listen_start_voice: "config/assets/listen_ding.wav"
-# ---------- Tiếng "ờ..." lấp khoảng chờ khi robot đang xử lý (STT+LLM ~5s) ----------
-thinking_filler_sound: true
-thinking_filler_dir: "config/assets/thinking"
+# ---------- Tiếng "thinking" lặp khi robot đang xử lý (LLM+TTS) cho tới khi có câu trả lời ----------
+thinking_loop_sound: true
+thinking_loop_sound_file: "config/assets/thinking/loading.mp3"
 # ---------- Giữ phiên trò chuyện lâu hơn ----------
 # Im KHÔNG nói gì quá ngần này (giây) thì server tự kết thúc phiên. Mặc định 120s.
 close_connection_no_voice_time: 60
