@@ -949,24 +949,13 @@ class ConnectionHandler:
                     content_type=ContentType.ACTION,
                 )
             )
-            # Tiếng "ờ..." lấp khoảng chờ: chèn 1 file filler NGẪU NHIÊN ngay sau FIRST,
-            # TRƯỚC khi gọi LLM -> phát liền trong lúc LLM đang nghĩ, câu trả lời nối sau.
-            if self.config.get("thinking_filler_sound", False):
-                try:
-                    import glob, random
-                    fdir = self.config.get("thinking_filler_dir", "config/assets/thinking")
-                    fillers = glob.glob(os.path.join(fdir, "*.wav"))
-                    if fillers:
-                        self.tts.tts_text_queue.put(
-                            TTSMessageDTO(
-                                sentence_id=current_sentence_id,
-                                sentence_type=SentenceType.MIDDLE,
-                                content_type=ContentType.FILE,
-                                content_file=random.choice(fillers),
-                            )
-                        )
-                except Exception as e:
-                    self.logger.bind(tag=TAG).warning(f"Thinking filler error: {e}")
+            # "Thinking" placeholder sound: loops from right after FIRST until the real
+            # answer's first audio frame is ready (TTSProviderBase.handle_opus stops it) --
+            # covers both LLM and TTS-synthesis latency with no gap.
+            try:
+                self.tts.start_thinking_loop()
+            except Exception as e:
+                self.logger.bind(tag=TAG).warning(f"Thinking loop error: {e}")
         else:
             # 递归调用时，使用当前的sentence_id
             current_sentence_id = self.sentence_id
