@@ -26,6 +26,8 @@ LOGS = {
     "power-outage (:8011)": "/tmp/robot-poweroutage.log",
     "search (:8012)": "/tmp/robot-search.log",
     "r1-watchdog": "/tmp/robot-r1-watchdog.log",
+    "claude-cli-adapter (out)": "/tmp/claude-adapter.log",
+    "claude-cli-adapter (err)": "/tmp/claude-adapter.err",
 }
 
 app = FastAPI()

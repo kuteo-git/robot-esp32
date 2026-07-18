@@ -19,6 +19,7 @@ For full install steps, see the repo root [`SETUP.md`](../SETUP.md). This file i
 | **pytube** | `pytube_api.py` | `run_pytube.sh` | 114 | conda `base` | YouTube audio playback → `play_youtube` / `play_music_room`. Needs `ffmpeg` + Deno; deps in `app_pytube_requirement.txt`. |
 | **log viewer** | `log_web.py` | `run_logweb.sh` | 8009 | conda `xiaozhi` | Live browser view of all service logs (SSE tail). |
 | **r1-watchdog** | `r1_watchdog.py` | `run_r1watchdog.sh` | — | conda `xiaozhi` | Auto-restarts the self-built Android app on a PHICOMM R1 if it crashes. Set `R1_IP`. |
+| **Claude subscription adapter** | `claudehermessubscriptionadapter/server.py` | launchd `com.claude.subscription-adapter` | 8082 | own `.venv` | Fronts the Anthropic Messages API by routing requests through the `claude` CLI, so calls bill against a Pro/Max subscription instead of per-token API usage. Folded in from a separate upstream clone (`github.com/eliaspfeffer/claudehermessubscriptionadapter`) — see its own `README.md` for setup/config details. |
 
 Only **Whisper** and **VieNeu** are required (together with the core `xiaozhi-server`). Everything
 else is optional — start only what you need.
@@ -38,6 +39,10 @@ these services target 3.12:
   log viewer, r1-watchdog). They reuse the core server's env plus
   `xiaozhi-server/requirements-extra.txt`.
 - **conda `base`** — `pytube` (uses `pytubefix`/`yt-dlp`/Flask; see `app_pytube_requirement.txt`).
+- **`claudehermessubscriptionadapter/.venv`** (own venv, own `requirements.txt`) — kept separate from
+  `services/.venv` since it's a folded-in upstream project with its own dependency set, not launched
+  via a `run_*.sh` script (managed directly by its own launchd plist,
+  `~/Library/LaunchAgents/com.claude.subscription-adapter.plist`, not committed to this repo).
 
 ## Launcher scripts (`run_*.sh`)
 
