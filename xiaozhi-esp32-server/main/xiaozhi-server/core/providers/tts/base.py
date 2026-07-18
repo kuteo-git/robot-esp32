@@ -181,27 +181,44 @@ class TTSProviderBase(ABC):
         sample_rate = self.conn.sample_rate
         frame_ms = 60
         frame_bytes = int(sample_rate * frame_ms / 1000) * 2  # 16-bit mono
+        # How far ahead of the ideal real-time playback schedule production is allowed to
+        # run. Frame-locked pacing (sleep to within a few ms of exactly frame_ms between
+        # every frame) measured sleep overruns up to 75ms on 84% of frames under real load
+        # (ASR/LLM/tool-call threads contending for the GIL), which showed up as audible
+        # stutter on the device -- with zero slack, every scheduling delay became a gap.
+        # Bursting ahead up to LOOKAHEAD_SEC hands the device the same kind of playback
+        # buffer this codebase already relies on for regular TTS audio (encoded and queued
+        # as fast as possible, not paced frame-by-frame), so GIL jitter gets absorbed by the
+        # buffer instead of propagating straight through -- at the cost of up to
+        # LOOKAHEAD_SEC of stale loop audio still playing after stop_thinking_loop() fires.
+        LOOKAHEAD_SEC = 1.0
+        POLL_SEC = 0.05
         encoder = opus_encoder_utils.OpusEncoderUtils(
             sample_rate=sample_rate, channels=1, frame_size_ms=frame_ms
         )
         logger.bind(tag=TAG).info("Thinking loop started")
+        schedule_start = time.monotonic()
+        frame_index = 0
         try:
             while not stop_event.is_set() and not self.conn.stop_event.is_set() and not self.conn.client_abort:
                 for i in range(0, len(pcm), frame_bytes):
                     if stop_event.is_set() or self.conn.stop_event.is_set() or self.conn.client_abort:
                         return
+                    due_at = schedule_start + frame_index * (frame_ms / 1000)
+                    while time.monotonic() < due_at - LOOKAHEAD_SEC:
+                        if stop_event.is_set() or self.conn.stop_event.is_set() or self.conn.client_abort:
+                            return
+                        time.sleep(POLL_SEC)
                     chunk = pcm[i:i + frame_bytes]
                     if len(chunk) < frame_bytes:
                         chunk = chunk + b"\x00" * (frame_bytes - len(chunk))
-                    t0 = time.monotonic()
                     encoder.encode_pcm_to_opus_stream(
                         chunk, end_of_stream=False,
                         callback=lambda d: self.tts_audio_queue.put(
                             (SentenceType.MIDDLE, d, None, getattr(self, "current_sentence_id", None))
                         ),
                     )
-                    elapsed = time.monotonic() - t0
-                    time.sleep(max(0.0, frame_ms / 1000 - elapsed))
+                    frame_index += 1
         finally:
             logger.bind(tag=TAG).info("Thinking loop stopped")
 
