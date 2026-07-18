@@ -118,6 +118,7 @@ class TTSProviderBase(ABC):
         self.tts_stop_request = False
         self.processed_chars = 0
         self.is_first_sentence = True
+        self._thinking_stop_event = None
 
     def generate_filename(self, extension=".wav"):
         return os.path.join(
@@ -143,6 +144,65 @@ class TTSProviderBase(ABC):
             pcm = audio.raw_data
             _THINKING_LOOP_PCM_CACHE[key] = pcm
         return pcm
+
+    def start_thinking_loop(self):
+        """Loop the configured 'thinking' placeholder sound on tts_audio_queue from turn
+        start until stop_thinking_loop() is called (handle_opus calls it automatically once
+        the real answer's first audio frame is ready) -- covers both LLM and TTS-synthesis
+        latency with no gap, since the loop runs on its own thread independent of both."""
+        if getattr(self.conn, "text_only", False):
+            return
+        if not self.conn.config.get("thinking_loop_sound", False):
+            return
+        sound_file = self.conn.config.get("thinking_loop_sound_file")
+        if not sound_file or not os.path.exists(sound_file):
+            return
+        stop_event = threading.Event()
+        self._thinking_stop_event = stop_event
+        threading.Thread(
+            target=self._thinking_loop_worker, args=(sound_file, stop_event), daemon=True
+        ).start()
+
+    def stop_thinking_loop(self):
+        """Idempotent -- safe to call even if the loop was never started."""
+        stop_event = self._thinking_stop_event
+        if stop_event is not None:
+            stop_event.set()
+
+    def _thinking_loop_worker(self, sound_file, stop_event):
+        try:
+            pcm = self._get_thinking_loop_pcm(sound_file)
+        except Exception as e:
+            logger.bind(tag=TAG).warning(f"Thinking loop sound decode failed: {e}")
+            return
+        if not pcm:
+            return
+        sample_rate = self.conn.sample_rate
+        frame_ms = 60
+        frame_bytes = int(sample_rate * frame_ms / 1000) * 2  # 16-bit mono
+        encoder = opus_encoder_utils.OpusEncoderUtils(
+            sample_rate=sample_rate, channels=1, frame_size_ms=frame_ms
+        )
+        logger.bind(tag=TAG).info("Thinking loop started")
+        try:
+            while not stop_event.is_set() and not self.conn.stop_event.is_set() and not self.conn.client_abort:
+                for i in range(0, len(pcm), frame_bytes):
+                    if stop_event.is_set() or self.conn.stop_event.is_set() or self.conn.client_abort:
+                        return
+                    chunk = pcm[i:i + frame_bytes]
+                    if len(chunk) < frame_bytes:
+                        chunk = chunk + b"\x00" * (frame_bytes - len(chunk))
+                    t0 = time.monotonic()
+                    encoder.encode_pcm_to_opus_stream(
+                        chunk, end_of_stream=False,
+                        callback=lambda d: self.tts_audio_queue.put(
+                            (SentenceType.MIDDLE, d, None, getattr(self, "current_sentence_id", None))
+                        ),
+                    )
+                    elapsed = time.monotonic() - t0
+                    time.sleep(max(0.0, frame_ms / 1000 - elapsed))
+        finally:
+            logger.bind(tag=TAG).info("Thinking loop stopped")
 
     def to_tts_stream(self, text, opus_handler: Callable[[bytes], None] = None) -> None:
         # 保留原始文本用于显示/上报
