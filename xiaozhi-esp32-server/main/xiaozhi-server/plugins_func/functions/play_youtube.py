@@ -449,14 +449,20 @@ async def _play_queue(conn, initial_queue, start_index=0, interrupt_current=Fals
                 continue
 
             seek = song.get("_seek", 0)
+            # Measure the WHOLE track from the untrimmed file: a trimmed mp3 copied with `-c copy`
+            # can keep the original Xing header, so probing the trimmed file can report the full
+            # length back and inflate every total.
+            full_dur = _mp3_duration(path) or _parse_dur(song.get("duration")) or DEFAULT_DUR
             play_path = await asyncio.to_thread(_trim_mp3, path, seek) if seek > 0 else path
+            if seek > 0 and play_path == path:
+                # _trim_mp3 fell back to the original (e.g. ffmpeg can't decode a corrupt cache
+                # file): the audio really does start at 0, so don't claim we resumed mid-song --
+                # that would show a wrong position and wait for time that never plays.
+                logger.bind(tag=TAG).warning(f"play_youtube: trim to {seek}s failed -> playing from the start")
+                seek = 0
             _queue_file(conn, play_path)  # download done -> auto-plays (from second 'seek' if this is a resume)
             idx += 1
-            # play_dur = length of the (possibly trimmed) audio we actually queued; full_dur = the
-            # whole track, so the panel's progress bar keeps the real timeline across resumes/seeks
-            # instead of restarting at 0 each time.
-            play_dur = _mp3_duration(play_path) or _parse_dur(song.get("duration")) or DEFAULT_DUR
-            full_dur = seek + play_dur
+            play_dur = max(1, full_dur - seek)  # how much audio actually remains to be played
             await _send_now_playing(conn, song, state="playing", duration_s=full_dur, position_s=seek)
             result, waited = await _wait_song(conn, my_session, play_dur, song, seek, full_dur)
             if result == "stop":
