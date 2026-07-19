@@ -21,7 +21,11 @@ class MediaTextMessageHandler(TextMessageHandler):
     async def handle(self, conn, msg_json: Dict[str, Any]) -> None:
         action = msg_json.get("action")
         if action == "play":
-            await handle_media_play(conn, msg_json.get("items") or [])
+            await handle_media_play(
+                conn,
+                msg_json.get("items") or [],
+                int(msg_json.get("start_index") or 0),
+            )
         elif action == "next":
             handle_media_next(conn)
         elif action == "pause":

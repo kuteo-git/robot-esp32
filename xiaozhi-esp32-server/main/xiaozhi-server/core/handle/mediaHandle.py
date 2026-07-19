@@ -10,12 +10,13 @@ if TYPE_CHECKING:
 TAG = __name__
 
 
-async def handle_media_play(conn: "ConnectionHandler", songs: list):
-    """[songs] is the list the control panel is displaying, starting at the tapped song, so the
-    playlist matches what the user sees rather than YouTube's related-song radio."""
+async def handle_media_play(conn: "ConnectionHandler", songs: list, start_index: int = 0):
+    """[songs] is the WHOLE list the control panel is displaying and [start_index] the song that was
+    tapped, so the playlist matches what the user sees (rather than YouTube's related-song radio)
+    and the untapped songs above it stay on screen instead of vanishing."""
     if not songs or not conn.loop.is_running():
         return
-    conn.loop.create_task(play_media_queue(conn, songs))
+    conn.loop.create_task(play_media_queue(conn, songs, start_index))
 
 
 def handle_media_next(conn: "ConnectionHandler"):

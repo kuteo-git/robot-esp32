@@ -305,7 +305,7 @@ async def _push_queue(conn, queue):
         pass
 
 
-async def _play_queue(conn, initial_queue, interrupt_current=False):
+async def _play_queue(conn, initial_queue, start_index=0, interrupt_current=False):
     """Core playback loop: session setup, endless-queue top-up (related songs), per-song
     play/wait/interrupt/pause handling. Shared by the voice-triggered search path (play_youtube)
     and the web-triggered caller-supplied-list path (play_media_queue)."""
@@ -339,7 +339,13 @@ async def _play_queue(conn, initial_queue, interrupt_current=False):
         conn.client_abort = False
         cache_dir = _pytube_cache_dir(conn)
 
-        queue = list(initial_queue)
+        # `playlist` is what the panel DISPLAYS -- the full list, which never shrinks as songs are
+        # consumed, so tapping the 3rd song doesn't make the first two disappear from the list.
+        # `queue` is the working list actually played from, starting at the song that was tapped.
+        playlist = list(initial_queue)
+        if not 0 <= start_index < len(playlist):
+            start_index = 0
+        queue = playlist[start_index:]
         played = set()
         intent_llm = conn.intent_type == "intent_llm"
         turn_open = False
@@ -360,7 +366,7 @@ async def _play_queue(conn, initial_queue, interrupt_current=False):
         first_turn = True
         resume = False  # True = replay the current song (after the user interrupted to ask something)
         await _send_music(conn, "start")   # -> tells the R1 app to turn on the music LED
-        await _push_queue(conn, queue)
+        await _push_queue(conn, playlist)
         while queue:
             if getattr(conn, "_yt_session", None) != my_session:
                 break
@@ -375,11 +381,15 @@ async def _play_queue(conn, initial_queue, interrupt_current=False):
                 played.add(vid)
                 # Top up when the queue is about to run dry -> plays UNLIMITED (a chain of related songs).
                 if len(queue) < 2:
-                    have = played | {q.get("video_id") for q in queue}
+                    # Exclude everything already on the playlist too, not just the unplayed queue,
+                    # so a top-up can't re-add a song the user can still see further up the list.
+                    have = (played | {q.get("video_id") for q in queue}
+                            | {p.get("video_id") for p in playlist})
                     for r in await asyncio.to_thread(_related, vid, RELATED_COUNT):
                         if r.get("video_id") and r.get("video_id") not in have:
                             queue.append(r)
-                    await _push_queue(conn, queue)
+                            playlist.append(r)
+                    await _push_queue(conn, playlist)
 
             title = song.get("title") or vid or ""
             artist = song.get("artist", "")
@@ -488,7 +498,7 @@ async def _play(conn, query):
     await _play_queue(conn, [results[0]])
 
 
-async def play_media_queue(conn, songs):
+async def play_media_queue(conn, songs, start_index=0):
     """Web-triggered play (Media Player tab): skip search and play the caller's own list, in order,
     starting at the song that was tapped. The panel sends the list it is DISPLAYING, so "next"
     walks the user's search results instead of jumping into YouTube's related-song radio -- the
@@ -501,7 +511,7 @@ async def play_media_queue(conn, songs):
     # outgoing one's audio itself or the previous song just keeps playing (see _play_queue). The
     # voice path deliberately does NOT pass this -- its abort already ran, and flushing again here
     # would drop the LLM's own "Để tao tìm bài đó nha" reply that is queued at the same moment.
-    await _play_queue(conn, songs, interrupt_current=True)
+    await _play_queue(conn, songs, start_index=start_index, interrupt_current=True)
 
 
 def _parse_dur(s):
