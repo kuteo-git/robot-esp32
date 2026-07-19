@@ -194,9 +194,12 @@ def _trim_mp3(path, start_sec):
         return path
 
 
-async def _wait_song(conn, session, dur, song):
-    """Wait out the song (dur seconds). Returns (status, waited) — status: 'stop'/'next'/'skip'/
-    'interrupt'/'paused'; waited = seconds already played (to resume at the right spot)."""
+async def _wait_song(conn, session, dur, song, seek=0, full_dur=None):
+    """Wait out the song. [dur] is how long THIS audio actually runs (a resumed/seeked song is
+    trimmed, so shorter than the track); [seek] is where in the track that audio starts and
+    [full_dur] the whole track's length, so reported positions stay on the real timeline instead of
+    snapping back to 0 after every resume. Returns (status, waited) — status: 'stop'/'next'/'skip'/
+    'interrupt'/'paused'/'seek'; waited = seconds of THIS audio played."""
     waited = 0
     while waited < dur:
         await asyncio.sleep(1)
@@ -206,12 +209,15 @@ async def _wait_song(conn, session, dur, song):
         if getattr(conn, "_yt_skip", 0):
             conn._yt_skip = 0
             return "skip", waited        # "skip" via the tool -> must INTERRUPT the currently-playing audio
+        if getattr(conn, "_yt_seek_to", None) is not None:
+            return "seek", waited        # panel scrubbed the position -> replay this song from there
         if getattr(conn, "_yt_web_paused", False):
             return "paused", waited      # web UI paused -> distinct from client_abort, no "listening" flow
         if getattr(conn, "client_abort", False):
             return "interrupt", waited  # user interrupted the music to ask something
         if waited % 3 == 0:
-            await _send_now_playing(conn, song, state="playing", duration_s=dur, position_s=waited)
+            await _send_now_playing(conn, song, state="playing",
+                                    duration_s=full_dur or dur, position_s=seek + waited)
     return "next", waited                # song ended naturally -> move to the next one smoothly (no interrupt)
 
 
@@ -254,6 +260,20 @@ async def _send_music(conn, state):
         pass
 
 
+async def _interrupt_device_audio(conn):
+    """Stop what the device is playing RIGHT NOW. Reassigning/pausing a session only stops this
+    server-side loop -- audio already queued and buffered on the R1 keeps sounding -- so every
+    takeover/skip/pause/seek has to clear the queue AND tell the device to stop. A wake-word
+    barge-in gets this for free via handleAbortMessage; nothing the control panel does does."""
+    conn.clear_queues()
+    try:
+        await conn.websocket.send(
+            json.dumps({"type": "tts", "state": "stop", "session_id": conn.session_id})
+        )
+    except Exception:
+        pass
+
+
 async def _wait_paused(conn, session):
     """After the web UI pauses (media_pause): wait for media_resume/media_next/media_stop or a new
     session, without ever entering the spoken-interruption flow _wait_qa_done drives -- pausing from
@@ -265,6 +285,8 @@ async def _wait_paused(conn, session):
         if getattr(conn, "_yt_skip", 0):
             conn._yt_skip = 0
             return "next"
+        if getattr(conn, "_yt_seek_to", None) is not None:
+            return "resume"  # scrubbing while paused resumes from the new spot
         if not getattr(conn, "_yt_web_paused", False):
             return "resume"
     return "stop"
@@ -325,13 +347,7 @@ async def _play_queue(conn, initial_queue, start_index=0, interrupt_current=Fals
             # handleAbortMessage clears the queue); a web tap sends no abort, so do it here. Same
             # two steps the "skip" branch below relies on.
             logger.bind(tag=TAG).info("play_youtube: taking over an active session -> flush queued audio")
-            conn.clear_queues()
-            try:
-                await conn.websocket.send(
-                    json.dumps({"type": "tts", "state": "stop", "session_id": conn.session_id})
-                )
-            except Exception:
-                pass
+            await _interrupt_device_audio(conn)
         # A web-triggered play never goes through startToChat (the only path that clears this), so a
         # leftover abort from an earlier barge-in would silently drop EVERY audio packet in
         # sendAudioHandle -- the song downloads and reports "playing" while nothing comes out of the
@@ -408,16 +424,21 @@ async def _play_queue(conn, initial_queue, start_index=0, interrupt_current=Fals
                 turn_open = True
 
             # Announce "loading" BEFORE downloading (the trailing period -> synth + play RIGHT AWAY, no wait for the download).
-            if resume:
+            # A scrub re-enters this loop for the SAME song and must stay silent: announcing every
+            # drag of the seek bar would talk over the music constantly.
+            if song.get("_silent"):
+                announce = None
+            elif resume:
                 announce = f"Phát tiếp bài {title} nha."
             elif idx == 0:
                 announce = f"Đang tải bài {title}" + (f" của {artist}" if artist else "") + "."
             else:
                 announce = f"Tiếp theo nha, đang tải bài {title}."
             resume = False
-            conn.tts.store_tts_text(conn.sentence_id, announce)
-            _say(conn, announce)
-            logger.bind(tag=TAG).info(f"play_youtube: {announce}")
+            if announce:
+                conn.tts.store_tts_text(conn.sentence_id, announce)
+                _say(conn, announce)
+                logger.bind(tag=TAG).info(f"play_youtube: {announce}")
             await _send_now_playing(conn, song, state="downloading")
 
             path = await asyncio.to_thread(_download, vid, cache_dir)
@@ -431,9 +452,13 @@ async def _play_queue(conn, initial_queue, start_index=0, interrupt_current=Fals
             play_path = await asyncio.to_thread(_trim_mp3, path, seek) if seek > 0 else path
             _queue_file(conn, play_path)  # download done -> auto-plays (from second 'seek' if this is a resume)
             idx += 1
-            dur = _mp3_duration(play_path) or _parse_dur(song.get("duration")) or DEFAULT_DUR
-            await _send_now_playing(conn, song, state="playing", duration_s=dur, position_s=seek)
-            result, waited = await _wait_song(conn, my_session, dur, song)
+            # play_dur = length of the (possibly trimmed) audio we actually queued; full_dur = the
+            # whole track, so the panel's progress bar keeps the real timeline across resumes/seeks
+            # instead of restarting at 0 each time.
+            play_dur = _mp3_duration(play_path) or _parse_dur(song.get("duration")) or DEFAULT_DUR
+            full_dur = seek + play_dur
+            await _send_now_playing(conn, song, state="playing", duration_s=full_dur, position_s=seek)
+            result, waited = await _wait_song(conn, my_session, play_dur, song, seek, full_dur)
             if result == "stop":
                 break
             if result == "skip":
@@ -443,21 +468,30 @@ async def _play_queue(conn, initial_queue, start_index=0, interrupt_current=Fals
                 # + queued right after (reusing the current turn) -> plays over the old one. Do NOT
                 # close/open a turn here (changing sentence_id here tends to make the device drop FIRST
                 # -> losing the next song's audio).
-                conn.clear_queues()
-                try:
-                    await conn.websocket.send(
-                        json.dumps({"type": "tts", "state": "stop", "session_id": conn.session_id})
-                    )
-                except Exception:
-                    pass
+                await _interrupt_device_audio(conn)
+            if result == "seek":
+                # Panel scrubbed: replay this same song from the new spot, silently.
+                target = getattr(conn, "_yt_seek_to", None) or 0
+                conn._yt_seek_to = None
+                await _interrupt_device_audio(conn)  # else pre-seek audio plays over the new position
+                queue.insert(0, dict(song, _seek=max(0, int(target)), _silent=True))
+                resume = True
             if result == "paused":
                 # Web UI paused (not a spoken interruption) -> wait for resume/next/stop without ever
-                # entering the "listening for a question" flow _wait_qa_done drives.
+                # entering the "listening for a question" flow _wait_qa_done drives. Marking the
+                # session paused only stops this loop -- the audio already queued/buffered on the
+                # device plays on -- so flush it, exactly like skip/takeover do.
                 pos = max(0, seek + waited)
+                await _interrupt_device_audio(conn)
+                await _send_now_playing(conn, song, state="paused", duration_s=full_dur, position_s=pos)
                 cont = await _wait_paused(conn, my_session)
                 if cont == "stop":
                     break
                 if cont == "resume":
+                    target = getattr(conn, "_yt_seek_to", None)
+                    if target is not None:      # scrubbed while paused -> resume from there instead
+                        conn._yt_seek_to = None
+                        pos = max(0, int(target))
                     queue.insert(0, dict(song, _seek=pos))
                     resume = True
                 # cont == "next" -> move to the next song (loop continues; a new turn is already open)

@@ -35,5 +35,14 @@ def handle_media_resume(conn: "ConnectionHandler"):
     conn._yt_web_paused = False
 
 
+def handle_media_seek(conn: "ConnectionHandler", position_s: int):
+    """Scrub to [position_s]. The play loop picks this up and replays the current song trimmed to
+    that point; scrubbing while paused also resumes, which is what dragging the bar implies."""
+    if not getattr(conn, "_yt_session", None):
+        return
+    conn._yt_seek_to = max(0, int(position_s))
+    conn._yt_web_paused = False
+
+
 def handle_media_stop(conn: "ConnectionHandler"):
     conn._yt_session = None
