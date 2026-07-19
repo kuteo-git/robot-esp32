@@ -308,12 +308,17 @@ async def _push_queue(conn, queue):
 async def _play_queue(conn, initial_queue):
     """Core playback loop: session setup, endless-queue top-up (related songs), per-song
     play/wait/interrupt/pause handling. Shared by the voice-triggered search path (play_youtube)
-    and the web-triggered specific-video path (play_media_video)."""
+    and the web-triggered caller-supplied-list path (play_media_queue)."""
     my_session = time.time()
     try:
         conn._yt_session = my_session
         conn._yt_skip = 0
         conn._yt_web_paused = False
+        # A web-triggered play never goes through startToChat (the only path that clears this), so a
+        # leftover abort from an earlier barge-in would silently drop EVERY audio packet in
+        # sendAudioHandle -- the song downloads and reports "playing" while nothing comes out of the
+        # speaker. Starting a playlist is explicit user intent: the previous turn is over.
+        conn.client_abort = False
         cache_dir = _pytube_cache_dir(conn)
 
         queue = list(initial_queue)
@@ -465,13 +470,16 @@ async def _play(conn, query):
     await _play_queue(conn, [results[0]])
 
 
-async def play_media_video(conn, video_id, title, artist, thumbnail):
-    """Web-triggered play (Media Player tab): skip search, start the queue directly with this one
-    video -- still tops up with related songs afterward, same endless-queue behavior a voice-triggered
-    play gets."""
-    await _play_queue(conn, [{
-        "video_id": video_id, "title": title, "artist": artist, "thumbnail": thumbnail,
-    }])
+async def play_media_queue(conn, songs):
+    """Web-triggered play (Media Player tab): skip search and play the caller's own list, in order,
+    starting at the song that was tapped. The panel sends the list it is DISPLAYING, so "next"
+    walks the user's search results instead of jumping into YouTube's related-song radio -- the
+    list you see is the list that plays. Related songs still top the queue up once the list runs
+    out, preserving endless playback."""
+    songs = [s for s in (songs or []) if s.get("video_id")]
+    if not songs:
+        return
+    await _play_queue(conn, songs)
 
 
 def _parse_dur(s):

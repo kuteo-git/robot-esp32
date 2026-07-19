@@ -2,7 +2,7 @@
 playback through the same play_youtube.py session a voice command would use."""
 from typing import TYPE_CHECKING
 
-from plugins_func.functions.play_youtube import play_media_video
+from plugins_func.functions.play_youtube import play_media_queue
 
 if TYPE_CHECKING:
     from core.connection import ConnectionHandler
@@ -10,10 +10,12 @@ if TYPE_CHECKING:
 TAG = __name__
 
 
-async def handle_media_play(conn: "ConnectionHandler", video_id: str, title: str, artist: str, thumbnail: str):
-    if not video_id or not conn.loop.is_running():
+async def handle_media_play(conn: "ConnectionHandler", songs: list):
+    """[songs] is the list the control panel is displaying, starting at the tapped song, so the
+    playlist matches what the user sees rather than YouTube's related-song radio."""
+    if not songs or not conn.loop.is_running():
         return
-    conn.loop.create_task(play_media_video(conn, video_id, title, artist, thumbnail))
+    conn.loop.create_task(play_media_queue(conn, songs))
 
 
 def handle_media_next(conn: "ConnectionHandler"):
