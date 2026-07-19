@@ -194,9 +194,9 @@ def _trim_mp3(path, start_sec):
         return path
 
 
-async def _wait_song(conn, session, dur):
-    """Wait out the song (dur seconds). Returns (status, waited) — status: 'stop'/'next'/'interrupt';
-    waited = seconds already played (to resume at the right spot)."""
+async def _wait_song(conn, session, dur, song):
+    """Wait out the song (dur seconds). Returns (status, waited) — status: 'stop'/'next'/'skip'/
+    'interrupt'/'paused'; waited = seconds already played (to resume at the right spot)."""
     waited = 0
     while waited < dur:
         await asyncio.sleep(1)
@@ -206,8 +206,12 @@ async def _wait_song(conn, session, dur):
         if getattr(conn, "_yt_skip", 0):
             conn._yt_skip = 0
             return "skip", waited        # "skip" via the tool -> must INTERRUPT the currently-playing audio
+        if getattr(conn, "_yt_web_paused", False):
+            return "paused", waited      # web UI paused -> distinct from client_abort, no "listening" flow
         if getattr(conn, "client_abort", False):
             return "interrupt", waited  # user interrupted the music to ask something
+        if waited % 3 == 0:
+            await _send_now_playing(conn, song, state="playing", duration_s=dur, position_s=waited)
     return "next", waited                # song ended naturally -> move to the next one smoothly (no interrupt)
 
 
@@ -250,27 +254,71 @@ async def _send_music(conn, state):
         pass
 
 
-async def _play(conn, query):
+async def _wait_paused(conn, session):
+    """After the web UI pauses (media_pause): wait for media_resume/media_next/media_stop or a new
+    session, without ever entering the spoken-interruption flow _wait_qa_done drives -- pausing from
+    a web page must not make the robot start listening. Returns 'stop'/'next'/'resume'."""
+    for _ in range(3600):  # up to 1 hour paused before giving up
+        await asyncio.sleep(1)
+        if getattr(conn, "_yt_session", None) != session:
+            return "stop"
+        if getattr(conn, "_yt_skip", 0):
+            conn._yt_skip = 0
+            return "next"
+        if not getattr(conn, "_yt_web_paused", False):
+            return "resume"
+    return "stop"
+
+
+async def _send_now_playing(conn, song, state, duration_s=0, position_s=0):
+    """Push the current now-playing snapshot to the client (Media Player tab's Now Playing card).
+    state: 'downloading' | 'playing' | 'stopped'. song=None when state='stopped'."""
     try:
-        # Playback session: a NEW music command changes _yt_session -> the old playlist stops on its own.
-        my_session = time.time()
+        await conn.websocket.send(json.dumps({
+            "type": "media_now_playing",
+            "state": state,
+            "video_id": song.get("video_id") if song else None,
+            "title": song.get("title", "") if song else "",
+            "artist": song.get("artist", "") if song else "",
+            "thumbnail": song.get("thumbnail", "") if song else "",
+            "duration_s": duration_s,
+            "position_s": position_s,
+        }))
+    except Exception:
+        pass
+
+
+async def _push_queue(conn, queue):
+    """Push the current (upcoming) queue to the client (Media Player tab's list). Related-song
+    top-ups only carry video_id/title/artist (see pytube_api's /v3/related) -- thumbnail/duration
+    are blank for those until/unless the client looks them up, which control.html doesn't need to."""
+    try:
+        items = [{
+            "video_id": s.get("video_id"),
+            "title": s.get("title", ""),
+            "artist": s.get("artist", ""),
+            "thumbnail": s.get("thumbnail", ""),
+            "duration": s.get("duration", ""),
+        } for s in queue]
+        await conn.websocket.send(json.dumps({"type": "media_queue", "items": items}))
+    except Exception:
+        pass
+
+
+async def _play_queue(conn, initial_queue):
+    """Core playback loop: session setup, endless-queue top-up (related songs), per-song
+    play/wait/interrupt/pause handling. Shared by the voice-triggered search path (play_youtube)
+    and the web-triggered specific-video path (play_media_video)."""
+    my_session = time.time()
+    try:
         conn._yt_session = my_session
         conn._yt_skip = 0
+        conn._yt_web_paused = False
         cache_dir = _pytube_cache_dir(conn)
 
-        results = await asyncio.to_thread(_search, query, 3)
-        if not results:
-            _say(conn, f"Tao không tìm thấy bài {query} trên YouTube.")
-            return
-
-        # ENDLESS playlist: the queue tops itself up with songs related to the current one, avoiding repeats.
-        queue = [results[0]]
+        queue = list(initial_queue)
         played = set()
         intent_llm = conn.intent_type == "intent_llm"
-
-        # Each playback segment = 1 turn (FIRST..LAST) under the CURRENT conn.sentence_id. When the user
-        # interrupts to ask something, sentence_id changes -> the music turn dies -> a NEW turn (FIRST)
-        # must be opened when resuming, otherwise the pipeline drops it.
         turn_open = False
 
         def _open_turn():
@@ -289,6 +337,7 @@ async def _play(conn, query):
         first_turn = True
         resume = False  # True = replay the current song (after the user interrupted to ask something)
         await _send_music(conn, "start")   # -> tells the R1 app to turn on the music LED
+        await _push_queue(conn, queue)
         while queue:
             if getattr(conn, "_yt_session", None) != my_session:
                 break
@@ -307,8 +356,9 @@ async def _play(conn, query):
                     for r in await asyncio.to_thread(_related, vid, RELATED_COUNT):
                         if r.get("video_id") and r.get("video_id") not in have:
                             queue.append(r)
+                    await _push_queue(conn, queue)
 
-            title = song.get("title", query)
+            title = song.get("title") or vid or ""
             artist = song.get("artist", "")
 
             # Open a turn if not already open (start of the playlist OR after being interrupted). After
@@ -335,6 +385,7 @@ async def _play(conn, query):
             conn.tts.store_tts_text(conn.sentence_id, announce)
             _say(conn, announce)
             logger.bind(tag=TAG).info(f"play_youtube: {announce}")
+            await _send_now_playing(conn, song, state="downloading")
 
             path = await asyncio.to_thread(_download, vid, cache_dir)
             if getattr(conn, "_yt_session", None) != my_session:
@@ -348,7 +399,8 @@ async def _play(conn, query):
             _queue_file(conn, play_path)  # download done -> auto-plays (from second 'seek' if this is a resume)
             idx += 1
             dur = _mp3_duration(play_path) or _parse_dur(song.get("duration")) or DEFAULT_DUR
-            result, waited = await _wait_song(conn, my_session, dur)
+            await _send_now_playing(conn, song, state="playing", duration_s=dur, position_s=seek)
+            result, waited = await _wait_song(conn, my_session, dur, song)
             if result == "stop":
                 break
             if result == "skip":
@@ -365,6 +417,17 @@ async def _play(conn, query):
                     )
                 except Exception:
                     pass
+            if result == "paused":
+                # Web UI paused (not a spoken interruption) -> wait for resume/next/stop without ever
+                # entering the "listening for a question" flow _wait_qa_done drives.
+                pos = max(0, seek + waited)
+                cont = await _wait_paused(conn, my_session)
+                if cont == "stop":
+                    break
+                if cont == "resume":
+                    queue.insert(0, dict(song, _seek=pos))
+                    resume = True
+                # cont == "next" -> move to the next song (loop continues; a new turn is already open)
             if result == "interrupt":
                 # User interrupted the music to ask/say something -> the abort already closed the music turn (sentence_id will change).
                 turn_open = False
@@ -381,7 +444,7 @@ async def _play(conn, query):
         if turn_open and getattr(conn, "_yt_session", None) == my_session:
             _close_turn()
     except Exception as e:
-        logger.bind(tag=TAG).error(f"_play '{query}': {e}")
+        logger.bind(tag=TAG).error(f"_play_queue: {e}")
     finally:
         # Turn off the music LED when this playlist stops (ran out of songs / "stop the music"). Do NOT
         # turn it off if a NEW music command has already taken over the session (that session turns its
@@ -389,6 +452,26 @@ async def _play(conn, query):
         cur = getattr(conn, "_yt_session", None)
         if cur is None or cur == my_session:
             await _send_music(conn, "stop")
+            await _send_now_playing(conn, None, state="stopped")
+
+
+async def _play(conn, query):
+    results = await asyncio.to_thread(_search, query, 3)
+    if not results:
+        _say(conn, f"Tao không tìm thấy bài {query} trên YouTube.")
+        return
+    if not results[0].get("title"):
+        results[0]["title"] = query  # preserve the original fallback (raw query) when search omits a title
+    await _play_queue(conn, [results[0]])
+
+
+async def play_media_video(conn, video_id, title, artist, thumbnail):
+    """Web-triggered play (Media Player tab): skip search, start the queue directly with this one
+    video -- still tops up with related songs afterward, same endless-queue behavior a voice-triggered
+    play gets."""
+    await _play_queue(conn, [{
+        "video_id": video_id, "title": title, "artist": artist, "thumbnail": thumbnail,
+    }])
 
 
 def _parse_dur(s):
