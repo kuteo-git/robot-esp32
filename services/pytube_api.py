@@ -1186,6 +1186,11 @@ def related_v3(video_id):
                 'video_id': vid,
                 'title': t.get('title', ''),
                 'artist': ', '.join(a['name'] for a in (t.get('artists') or []) if a.get('name')),
+                # NOTE: watch-playlist tracks expose 'thumbnail' (singular, a list) + 'length',
+                # unlike search results which use 'thumbnails' (plural). Without these the R1
+                # control panel renders queued songs with blank covers and no duration.
+                'thumbnail': (t.get('thumbnail') or [{}])[-1].get('url', ''),
+                'duration': t.get('length', '') or '',
             })
             if len(items) >= limit:
                 break
