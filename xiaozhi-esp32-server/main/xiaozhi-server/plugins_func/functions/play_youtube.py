@@ -305,15 +305,33 @@ async def _push_queue(conn, queue):
         pass
 
 
-async def _play_queue(conn, initial_queue):
+async def _play_queue(conn, initial_queue, interrupt_current=False):
     """Core playback loop: session setup, endless-queue top-up (related songs), per-song
     play/wait/interrupt/pause handling. Shared by the voice-triggered search path (play_youtube)
     and the web-triggered caller-supplied-list path (play_media_queue)."""
     my_session = time.time()
     try:
+        had_session = bool(getattr(conn, "_yt_session", None))
+        # Claim the session BEFORE clearing below, so the outgoing session's post-download guard
+        # (`_yt_session != my_session -> break`) stops it re-queueing audio after we flush.
         conn._yt_session = my_session
         conn._yt_skip = 0
         conn._yt_web_paused = False
+        if interrupt_current and had_session:
+            # Taking over from a playlist that is already sounding. Reassigning the session only
+            # stops the old loop at its next 1s tick -- it does NOT stop audio already queued and
+            # buffered on the device, so the previous song keeps playing and the new one waits
+            # behind it. A VOICE takeover gets this for free (the wake word sends an abort ->
+            # handleAbortMessage clears the queue); a web tap sends no abort, so do it here. Same
+            # two steps the "skip" branch below relies on.
+            logger.bind(tag=TAG).info("play_youtube: taking over an active session -> flush queued audio")
+            conn.clear_queues()
+            try:
+                await conn.websocket.send(
+                    json.dumps({"type": "tts", "state": "stop", "session_id": conn.session_id})
+                )
+            except Exception:
+                pass
         # A web-triggered play never goes through startToChat (the only path that clears this), so a
         # leftover abort from an earlier barge-in would silently drop EVERY audio packet in
         # sendAudioHandle -- the song downloads and reports "playing" while nothing comes out of the
@@ -479,7 +497,11 @@ async def play_media_queue(conn, songs):
     songs = [s for s in (songs or []) if s.get("video_id")]
     if not songs:
         return
-    await _play_queue(conn, songs)
+    # interrupt_current: a web tap has no wake-word abort behind it, so this session must flush the
+    # outgoing one's audio itself or the previous song just keeps playing (see _play_queue). The
+    # voice path deliberately does NOT pass this -- its abort already ran, and flushing again here
+    # would drop the LLM's own "Để tao tìm bài đó nha" reply that is queued at the same moment.
+    await _play_queue(conn, songs, interrupt_current=True)
 
 
 def _parse_dur(s):
