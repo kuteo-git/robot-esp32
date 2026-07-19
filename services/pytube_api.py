@@ -256,9 +256,33 @@ class VideoUnavailableError(Exception):
     pass
 
 
+# ── Download progress tracking (in-memory, best-effort) ─────────────────────
+# video_id -> {"percent": int, "status": "downloading"|"processing"}. Populated by yt-dlp's
+# progress_hooks during download_audio_with_ytdlp(); polled by the R1 control panel
+# (ControlServer.kt) while a track is downloading so the UI can show a real percentage.
+_DOWNLOAD_PROGRESS = {}
+
+
+def _make_progress_hook(video_id):
+    def hook(d):
+        status = d.get('status')
+        if status == 'downloading':
+            total = d.get('total_bytes') or d.get('total_bytes_estimate')
+            downloaded = d.get('downloaded_bytes', 0)
+            percent = int(downloaded * 100 / total) if total else 0
+            _DOWNLOAD_PROGRESS[video_id] = {'percent': percent, 'status': 'downloading'}
+        elif status == 'finished':
+            # yt-dlp's raw download is done, but FFmpegExtractAudio postprocessing still runs after
+            # this hook fires -> report 99, not 100. The /v3/video/<id> response (Ready) is the real
+            # "done" signal to the client, not this progress endpoint.
+            _DOWNLOAD_PROGRESS[video_id] = {'percent': 99, 'status': 'processing'}
+    return hook
+
+
 def download_audio_with_ytdlp(video_id):
     """Download audio using yt-dlp and get info in single call"""
     youtube_url = f"https://youtube.com/watch?v={video_id}"
+    _DOWNLOAD_PROGRESS[video_id] = {'percent': 0, 'status': 'downloading'}  # reset for this attempt
 
     # Prefer AUDIO. FFmpegExtractAudio will extract the audio -> a real mp3 (machine has ffmpeg).
     format_strategies = [
@@ -294,7 +318,8 @@ def download_audio_with_ytdlp(video_id):
             }],
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15'
-            }
+            },
+            'progress_hooks': [_make_progress_hook(video_id)],
         }
         
         # Only add format if specified
@@ -973,6 +998,19 @@ def get_video_info_v3(video_id):
             'message': str(e),
             'video_id': video_id
         }), 500
+
+
+@app.route('/v3/download_progress/<video_id>', methods=['GET'])
+def download_progress_v3(video_id):
+    """Best-effort download progress, populated by yt-dlp's progress_hooks (see
+    download_audio_with_ytdlp). Polled by the R1 control panel while a track is downloading."""
+    cached = find_cached_mp3_file(video_id)
+    if cached and os.path.exists(cached):
+        return jsonify({'percent': 100, 'status': 'cached'})
+    progress = _DOWNLOAD_PROGRESS.get(video_id)
+    if not progress:
+        return jsonify({'percent': -1, 'status': 'idle'})
+    return jsonify(progress)
 
 
 @app.route('/v2/mp3/<video_id>', methods=['GET'])
