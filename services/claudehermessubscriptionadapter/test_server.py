@@ -225,6 +225,19 @@ class SystemPromptAndMessages(unittest.TestCase):
         ])
         self.assertIn("<tool_result id=t1>output here</tool_result>", out)
 
+    def test_messages_to_prompt_truncates_oversized_tool_result(self):
+        huge = "x" * (server.MAX_TOOL_RESULT_CHARS + 500)
+        out = server._messages_to_prompt([
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": huge}
+            ]},
+        ])
+        self.assertIn("truncated, 500 more chars omitted", out)
+        self.assertNotIn("x" * (server.MAX_TOOL_RESULT_CHARS + 1), out)
+
+    def test_truncate_tool_result_under_limit_unchanged(self):
+        self.assertEqual(server._truncate_tool_result("short"), "short")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

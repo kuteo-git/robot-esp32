@@ -212,6 +212,21 @@ def _build_system_prompt(system_text: str, tools: list) -> str:
     return "\n\n".join(parts)
 
 
+# Cap on a single tool_result's content when flattened into the prompt. Without
+# this, one oversized result (e.g. a browser_console/browser_snapshot dump of a
+# full page) gets baked into the conversation history and re-sent AT FULL SIZE
+# on every subsequent turn — since claude -p is stateless per call, that cost
+# repeats turn after turn instead of being paid once.
+MAX_TOOL_RESULT_CHARS = 4000
+
+
+def _truncate_tool_result(text: str, limit: int = MAX_TOOL_RESULT_CHARS) -> str:
+    if len(text) <= limit:
+        return text
+    omitted = len(text) - limit
+    return text[:limit] + f"\n…[truncated, {omitted} more chars omitted]"
+
+
 def _messages_to_prompt(messages: list) -> str:
     """
     Flatten the Anthropic messages array into a Human/Assistant dialogue string
@@ -243,6 +258,7 @@ def _messages_to_prompt(messages: list) -> str:
                         inner = " ".join(
                             b.get("text", "") for b in inner if b.get("type") == "text"
                         )
+                    inner = _truncate_tool_result(inner)
                     parts.append(f"<tool_result id={block.get('tool_use_id', '')}>{inner}</tool_result>")
             text = "\n".join(parts)
         else:

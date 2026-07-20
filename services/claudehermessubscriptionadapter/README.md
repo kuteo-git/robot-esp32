@@ -103,7 +103,12 @@ instructions appended to the system prompt and teaches the model to emit tool
 calls as `<tool_call>{"name": "…", "input": {…}}</tool_call>` blocks.  These
 are parsed back into proper `tool_use` content blocks before the response is
 returned.  Multi-turn tool loops work because Hermes sends `tool_result`
-messages back, which the adapter serialises into the dialogue context.
+messages back, which the adapter serialises into the dialogue context.  Since
+`claude -p` runs statelessly per turn (no session persistence, no caching),
+the full dialogue and tool schema list are re-sent on every call — an
+oversized `tool_result` (e.g. a full-page scrape) is truncated to
+`MAX_TOOL_RESULT_CHARS` (4000 chars) before being folded in, so it isn't
+re-billed at full size on every subsequent turn.
 
 ---
 
