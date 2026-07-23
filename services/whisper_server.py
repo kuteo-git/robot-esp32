@@ -162,6 +162,22 @@ else:
             log(f"mồi ngữ cảnh lỗi, tắt: {e}")
 log("sẵn sàng." + ("" if INIT_PROMPT else " (mồi ngữ cảnh: tắt)"))
 
+import threading
+
+# Guards every mlx_whisper.transcribe() call (keep-warm ping AND real requests) so the keep-warm
+# thread and a real request from the robot never hit the GPU at the same moment from two different
+# OS threads -- they're on separate threads (this one vs. the FastAPI request thread), unlike two
+# real requests which are already serialized by asyncio's single event loop.
+_mlx_lock = threading.Lock()
+
+# A real request landing while a keep-warm ping is mid-flight would have to wait out that ping (up
+# to ~2s) before the lock frees up -- a real, user-visible cost. _last_activity tracks the last time
+# a REAL request ran _run_pipe; the keep-warm loop skips its ping if one happened recently, since
+# real usage already keeps the GPU warm on its own. This means keep-warm only ever fires during
+# genuine idle stretches -- exactly the case it exists for -- so a live conversation never collides
+# with it.
+_last_activity = time.time()
+
 # Warmup MLX: run once on silent audio to compile the Metal kernel AHEAD OF TIME -> the very FIRST
 # real request (e.g. "Alexa what's the weather" right after a restart/reboot) doesn't hit the
 # ~2.5s cold-start, and is fast (~1.4s) right away.
@@ -174,16 +190,51 @@ if BACKEND == "mlx":
     except Exception as e:
         log(f"warmup MLX bỏ qua: {e}")
 
+# KEEP-WARM: after the robot sits idle, macOS/Apple Silicon lets the compiled Metal kernel / GPU
+# clock cool down, so the NEXT real request pays a recompile/ramp-up cost instead of being instant.
+# 2026-07-22: measured several intervals -- 300s: NOT enough (1.6-5.2s, spiky). 10s/60s/120s: all
+# equally flat (~1.7-2.1s, zero spikes). Settled on 120s: cheapest tested (~1.5% duty cycle) with no
+# measured downside vs. tighter intervals. If this ever needs re-tuning, watch
+# /tmp/robot-whisper.log's "keep-warm xong" lines for drift back toward the 300s behavior.
+WARMUP_INTERVAL_S = float(os.environ.get("WHISPER_WARMUP_INTERVAL_S", "120"))
+if BACKEND == "mlx" and WARMUP_INTERVAL_S > 0:
+
+    def _keep_warm_loop():
+        while True:
+            _cycle_start = time.time()
+            time.sleep(WARMUP_INTERVAL_S)
+            # A fixed "< WARMUP_INTERVAL_S ago" check is racy: a real request landing early in this
+            # wait can still look "too old" by the time we check, even though it was genuinely
+            # recent (2026-07-22, observed a request at t+34.1s NOT skip the check at t+44 -- an
+            # unhelpfully tight margin). Instead: did a real request happen at ANY point since this
+            # wait started? If so, it already warmed the GPU -- skip unconditionally, no margin math.
+            if _last_activity >= _cycle_start:
+                continue  # a real request already warmed it up this cycle -- don't risk blocking one
+            try:
+                _t = time.time()
+                with _mlx_lock:
+                    mlx_whisper.transcribe(np.zeros(16000, dtype=np.float32), path_or_hf_repo=MLX_PATH,
+                                           language="vi", task="transcribe", fp16=True)
+                log(f"keep-warm xong ({time.time()-_t:.1f}s)")
+            except Exception as e:
+                log(f"keep-warm lỗi: {e}")
+
+    threading.Thread(target=_keep_warm_loop, daemon=True).start()
+    log(f"keep-warm: hâm nóng lại Metal mỗi {WARMUP_INTERVAL_S:.0f}s")
+
 
 def _run_pipe(path):
     """Run STT via the configured backend; returns text. MLX = mlx_whisper, otherwise = transformers pipeline."""
+    global _last_activity
+    _last_activity = time.time()
     if BACKEND == "mlx":
         import mlx_whisper
         kw = dict(language="vi", task="transcribe", temperature=0.0,
                   condition_on_previous_text=False, fp16=True)
         if INIT_PROMPT:
             kw["initial_prompt"] = INIT_PROMPT
-        out = mlx_whisper.transcribe(path, path_or_hf_repo=MLX_PATH, **kw)
+        with _mlx_lock:
+            out = mlx_whisper.transcribe(path, path_or_hf_repo=MLX_PATH, **kw)
         text = (out.get("text") or "").strip()
         segs = out.get("segments", [])
         if text and segs:

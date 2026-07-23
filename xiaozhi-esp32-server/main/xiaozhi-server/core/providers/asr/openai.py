@@ -1,5 +1,6 @@
 import time
 import os
+import asyncio
 from config.logger import setup_logging
 from typing import Optional, Tuple, List
 from core.providers.asr.dto.dto import InterfaceType
@@ -48,11 +49,21 @@ class ASRProvider(ASRProviderBase):
                 }
 
                 start_time = time.time()
-                response = requests.post(
-                    self.api_url,
-                    files=files,
-                    data=data,
-                    headers=headers
+                # requests.post() is blocking; this coroutine is awaited directly from the
+                # connection's message loop, which runs on the server's single shared event
+                # loop (core/connection.py: self.loop = asyncio.get_running_loop(), one loop
+                # for every connected device). Without run_in_executor, the whole server -- every
+                # other connected device's audio/TTS/message handling -- stalls for the full
+                # Whisper round-trip. TTS (tts_priority_thread) and LLM (conn.executor.submit)
+                # already avoid this; ASR was the one path still blocking the shared loop.
+                response = await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    lambda: requests.post(
+                        self.api_url,
+                        files=files,
+                        data=data,
+                        headers=headers,
+                    ),
                 )
                 logger.bind(tag=TAG).debug(
                     f"语音识别耗时: {time.time() - start_time:.3f}s | 结果: {response.text}"

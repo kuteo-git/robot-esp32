@@ -17,5 +17,5 @@ export WHISPER_MODEL="vinai/PhoWhisper-large"   # only used when BACKEND=transfo
 #   LOUD noise >0.006, which this gate can't block; to actually reduce hallucinations, improve the VAD/the
 #   HALLUCINATION_MARKERS filter instead of raising this gate.
 export WHISPER_MIN_RMS="0"   # 2026-06-26 rms gate TURNED OFF (rms<0 is never true): distant voices kept getting dropped. The server-side VAD + _looks_like_hallucination still filter hallucinations.
-export WHISPER_SAVE_AUDIO="0"   # 2026-07-18 debug wav dump (asr_debug/) turned off — was only for far-field STT tuning, done for now.
+export WHISPER_SAVE_AUDIO="1"   # 2026-07-22 turned back on: need real samples to root-cause the recurring post-idle hallucination bug.
 exec python whisper_server.py
