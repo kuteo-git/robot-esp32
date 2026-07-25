@@ -21,10 +21,12 @@ LOGS = {
     "xiaozhi (stdout)": "/tmp/robot-xiaozhi.log",
     "vieneu (TTS)": "/tmp/robot-vieneu.log",
     "whisper (ASR)": "/tmp/robot-whisper.log",
+    "moonshine (ASR)": "/tmp/robot-moonshine.log",
     "pytube (yt:114)": "/tmp/robot-pytube.log",
     "weather (:8010)": "/tmp/robot-weather.log",
     "power-outage (:8011)": "/tmp/robot-poweroutage.log",
     "search (:8012)": "/tmp/robot-search.log",
+    "lunar (:8013)": "/tmp/robot-lunar.log",
     "r1-watchdog": "/tmp/robot-r1-watchdog.log",
     "claude-cli-adapter (out)": "/tmp/claude-adapter.log",
     "claude-cli-adapter (err)": "/tmp/claude-adapter.err",
@@ -127,7 +129,7 @@ button.on{background:#2d6cdf;border-color:#2d6cdf}
   <span class="muted" id="cnt">0 dòng</span>
 </header>
 <div id="cfg">
-  <b>STT chống ảo giác (whisper :8001 · live, khỏi restart):</b>
+  <b>STT chống ảo giác (:8001 · whisper hoặc moonshine, tuỳ cái nào đang chạy · live, khỏi restart):</b>
   <label><input type="checkbox" id="cfgVad"> VAD (lọc ồn/im)</label>
   <label>VAD ngưỡng <input id="cfgVadT" size="4"></label>
   <label>logprob min <input id="cfgLp" size="5"></label>
@@ -167,13 +169,13 @@ pauseBtn.onclick=()=>{paused=!paused;pauseBtn.classList.toggle('on',paused);paus
 document.getElementById('wrap').onclick=function(){this.classList.toggle('on');
   log.style.whiteSpace=this.classList.contains('on')?'pre-wrap':'pre'};
 document.getElementById('clear').onclick=()=>{log.innerHTML='';n=0;cnt.textContent='0 dòng'};
-// --- STT anti-hallucination config (calls whisper :8001 directly, same host) ---
+// --- STT anti-hallucination config (calls :8001 directly, same host — whichever STT backend is live) ---
 const WHOST=`http://${location.hostname}:8001`, cfg=document.getElementById('cfg');
 const $c=id=>document.getElementById(id);
 async function loadCfg(){try{const c=await(await fetch(WHOST+'/config')).json();
   $c('cfgVad').checked=c.vad_enabled;$c('cfgVadT').value=c.vad_threshold;
   $c('cfgLp').value=c.min_logprob;$c('cfgDur').value=c.min_dur;$c('cfgMsg').textContent='';
-}catch(e){$c('cfgMsg').textContent='(không nối được whisper :8001)';}}
+}catch(e){$c('cfgMsg').textContent='(không nối được STT :8001)';}}
 const setCfg=(k,v)=>fetch(`${WHOST}/config?key=${k}&value=${encodeURIComponent(v)}`,{method:'POST'});
 $c('cfgBtn').onclick=()=>{cfg.classList.toggle('show');if(cfg.classList.contains('show'))loadCfg();};
 $c('cfgSave').onclick=async()=>{
