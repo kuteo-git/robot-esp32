@@ -54,28 +54,6 @@ def _preview(text: str, limit: int = 300) -> str:
     return text if len(text) <= limit else text[:limit] + f"…(+{len(text) - limit} chars)"
 
 
-def _rate_limit_note(info: dict) -> Optional[str]:
-    """
-    Turn a CLI `rate_limit_event.rate_limit_info` into a short user-facing
-    warning, or None when usage is comfortably below the limit. The CLI emits
-    these on the stream-json output; surfacing them lets you see you're about
-    to hit the subscription cap instead of only discovering it from a 429.
-    """
-    if not isinstance(info, dict):
-        return None
-    util = info.get("utilization")
-    surpassed = info.get("surpassedThreshold")
-    overage = info.get("isUsingOverage")
-    window = info.get("rateLimitType", "")
-    # Only warn when the CLI itself flags concern: over threshold or on overage.
-    if not (surpassed or overage):
-        return None
-    pct = f"{float(util) * 100:.0f}%" if isinstance(util, (int, float)) else "?"
-    if overage:
-        return f"⚠️ Subscription rate limit: using OVERAGE ({window} window, {pct} used)."
-    return f"⚠️ Subscription rate limit at {pct} of the {window} window — nearing the cap."
-
-
 # Paths from other providers' API conventions (Ollama, llama.cpp, generic
 # capability probes) that Hermes/omniroute try before settling on the real
 # Anthropic-shaped endpoints. They 404 by design — not worth logging every
@@ -443,7 +421,7 @@ async def _run_claude_collect(
     system_prompt: str,
     model: str,
     tool_names: set,
-) -> tuple[str, int, int, Optional[str]]:
+) -> tuple[str, int, int]:
     """
     Buffered result like _run_claude, but driven by the streaming CLI so we
     can stop early. When tools are present the model, after emitting a tool
@@ -455,14 +433,11 @@ async def _run_claude_collect(
     complete, parseable tool call appears in the accumulated text, kill the
     CLI and return.
 
-    Returns (text, input_tokens, output_tokens, rate_limit_note) — the note is
-    a short warning string when the CLI reported nearing/over the rate limit,
-    else None.
+    Returns (text, input_tokens, output_tokens).
     """
     full_text = ""
     input_tokens = 0
     output_tokens = 0
-    rate_note: Optional[str] = None
 
     agen = _run_claude_stream(prompt, system_prompt, model)
     try:
@@ -487,14 +462,9 @@ async def _run_claude_collect(
                                     f"EARLY_STOP tool call detected after "
                                     f"{len(full_text)} chars, killing CLI"
                                 )
-                                return full_text, input_tokens, output_tokens, rate_note
+                                return full_text, input_tokens, output_tokens
                 elif itype == "message_delta":
                     output_tokens = inner.get("usage", {}).get("output_tokens", output_tokens)
-            elif etype == "rate_limit_event":
-                note = _rate_limit_note(event.get("rate_limit_info", {}))
-                if note:
-                    rate_note = note
-                    logger.info(f"RATE_LIMIT {note}")
             elif etype == "result":
                 usage = event.get("usage", {})
                 input_tokens = usage.get("input_tokens", input_tokens)
@@ -505,7 +475,7 @@ async def _run_claude_collect(
         # completion.
         await agen.aclose()
 
-    return full_text, input_tokens, output_tokens, rate_note
+    return full_text, input_tokens, output_tokens
 
 
 # ---------------------------------------------------------------------------
@@ -852,7 +822,6 @@ async def _sse_stream_live(
     stop_reason = "end_turn"
 
     error_detail = None
-    rate_note: Optional[str] = None
     try:
         async for event in _run_claude_stream(prompt, system_prompt, model):
             etype = event.get("type")
@@ -878,11 +847,6 @@ async def _sse_stream_live(
                     inner_stop = inner.get("delta", {}).get("stop_reason")
                     if inner_stop:
                         stop_reason = inner_stop
-            elif etype == "rate_limit_event":
-                note = _rate_limit_note(event.get("rate_limit_info", {}))
-                if note:
-                    rate_note = note
-                    logger.info(f"RATE_LIMIT {note}")
             elif etype == "result":
                 usage = event.get("usage", {})
                 input_tokens = usage.get("input_tokens", input_tokens)
@@ -898,12 +862,8 @@ async def _sse_stream_live(
         # abort the connection with no explanation.
         error_detail = exc.detail
 
-    # Append the rate-limit warning (if any) as trailing text so it reaches
-    # the user, then the error note (if any) after it.
-    for extra in (rate_note, f"[adapter error: {error_detail}]" if error_detail else None):
-        if not extra:
-            continue
-        piece = f"\n\n{extra}"
+    if error_detail:
+        piece = f"\n\n[adapter error: {error_detail}]"
         full_text += piece
         yield _send(
             "content_block_delta",
@@ -913,7 +873,6 @@ async def _sse_stream_live(
                 "delta": {"type": "text_delta", "text": piece},
             },
         )
-    if error_detail:
         stop_reason = "end_turn"
 
     yield _send("content_block_stop", {"type": "content_block_stop", "index": 0})
@@ -979,11 +938,10 @@ async def post_messages(request: Request):
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    rate_note: Optional[str] = None
     if tools:
         # Buffered, but stop the CLI the instant a complete tool call appears
         # so we don't wait through the model's hallucinated continuation.
-        raw_text, input_tokens, output_tokens, rate_note = await _run_claude_collect(
+        raw_text, input_tokens, output_tokens = await _run_claude_collect(
             prompt, full_system, model, tool_names
         )
     else:
@@ -995,11 +953,6 @@ async def post_messages(request: Request):
     )
 
     content_blocks, stop_reason = _build_content_blocks(raw_text, tool_names)
-
-    # Surface a rate-limit warning to the user as a leading text block so it's
-    # visible alongside whatever the model produced (including tool calls).
-    if rate_note:
-        content_blocks.insert(0, {"type": "text", "text": rate_note})
 
     text_parts = [b["text"] for b in content_blocks if b["type"] == "text"]
     tool_calls_summary = [

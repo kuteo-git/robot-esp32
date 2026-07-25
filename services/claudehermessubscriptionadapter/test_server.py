@@ -162,33 +162,6 @@ class BuildContentBlocks(unittest.TestCase):
         self.assertEqual(blocks, [{"type": "text", "text": "no call here"}])
 
 
-class RateLimitNote(unittest.TestCase):
-    def test_below_threshold_none(self):
-        self.assertIsNone(server._rate_limit_note(
-            {"utilization": 0.5, "surpassedThreshold": False, "isUsingOverage": False}
-        ))
-
-    def test_surpassed_threshold_warns(self):
-        note = server._rate_limit_note(
-            {"utilization": 0.97, "surpassedThreshold": True,
-             "isUsingOverage": False, "rateLimitType": "five_hour"}
-        )
-        self.assertIsNotNone(note)
-        self.assertIn("97%", note)
-        self.assertIn("five_hour", note)
-
-    def test_overage_warns(self):
-        note = server._rate_limit_note(
-            {"utilization": 1.0, "surpassedThreshold": True,
-             "isUsingOverage": True, "rateLimitType": "five_hour"}
-        )
-        self.assertIn("OVERAGE", note)
-
-    def test_bad_input(self):
-        self.assertIsNone(server._rate_limit_note(None))
-        self.assertIsNone(server._rate_limit_note({}))
-
-
 class SystemPromptAndMessages(unittest.TestCase):
     def test_extract_system_text_string(self):
         self.assertEqual(server._extract_system_text("hi"), "hi")
