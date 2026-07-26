@@ -1,8 +1,10 @@
 import os
 import re
+import glob
 import time
 import uuid
 import queue
+import random
 import asyncio
 import threading
 import traceback
@@ -134,17 +136,36 @@ class TTSProviderBase(ABC):
     def handle_audio_file(self, file_audio: bytes, text):
         self.before_stop_play_files.append((file_audio, text))
 
-    def _get_thinking_loop_pcm(self, sound_file):
+    def _get_thinking_loop_pcm(self, sound_file, gain_db):
         """Decode+resample the thinking-loop sound to this connection's sample rate once,
-        cached by (path, sample_rate) since the same clip is reused across turns/connections."""
-        key = (sound_file, self.conn.sample_rate)
+        cached by (path, sample_rate, gain) since the same clip is reused across turns/connections.
+
+        Gain is applied here rather than per frame: it is a property of the decoded clip, so
+        attenuating once at decode time keeps it out of the playback loop entirely."""
+        key = (sound_file, self.conn.sample_rate, gain_db)
         pcm = _THINKING_LOOP_PCM_CACHE.get(key)
         if pcm is None:
             audio = AudioSegment.from_file(sound_file)
             audio = audio.set_channels(1).set_frame_rate(self.conn.sample_rate).set_sample_width(2)
+            if gain_db:
+                audio = audio.apply_gain(gain_db)
             pcm = audio.raw_data
             _THINKING_LOOP_PCM_CACHE[key] = pcm
         return pcm
+
+    def _pick_thinking_sound(self, configured):
+        """A DIRECTORY means "pick one at random"; a file means "always this one".
+
+        Hearing the identical clip on every request gets old fast, and the pool costs nothing to
+        vary since each clip is decoded once and cached by path. Directory listing happens per
+        turn so clips can be added or removed without restarting the server."""
+        if os.path.isdir(configured):
+            pool = sorted(
+                p for ext in ("wav", "mp3", "ogg", "m4a", "flac")
+                for p in glob.glob(os.path.join(configured, f"*.{ext}"))
+            )
+            return random.choice(pool) if pool else None
+        return configured if os.path.exists(configured) else None
 
     def start_thinking_loop(self):
         """Loop the configured 'thinking' placeholder sound on tts_audio_queue from turn
@@ -155,13 +176,19 @@ class TTSProviderBase(ABC):
             return
         if not self.conn.config.get("thinking_loop_sound", False):
             return
-        sound_file = self.conn.config.get("thinking_loop_sound_file")
-        if not sound_file or not os.path.exists(sound_file):
+        configured = self.conn.config.get("thinking_loop_sound_file")
+        if not configured:
             return
+        sound_file = self._pick_thinking_sound(configured)
+        if not sound_file:
+            return
+        # Negative dB: this plays UNDER the wait, so it should register as ambience rather than
+        # compete with the spoken filler that starts alongside it.
+        gain_db = float(self.conn.config.get("thinking_loop_gain_db", -12))
         stop_event = threading.Event()
         self._thinking_stop_event = stop_event
         threading.Thread(
-            target=self._thinking_loop_worker, args=(sound_file, stop_event), daemon=True
+            target=self._thinking_loop_worker, args=(sound_file, gain_db, stop_event), daemon=True
         ).start()
 
     def stop_thinking_loop(self):
@@ -170,9 +197,9 @@ class TTSProviderBase(ABC):
         if stop_event is not None:
             stop_event.set()
 
-    def _thinking_loop_worker(self, sound_file, stop_event):
+    def _thinking_loop_worker(self, sound_file, gain_db, stop_event):
         try:
-            pcm = self._get_thinking_loop_pcm(sound_file)
+            pcm = self._get_thinking_loop_pcm(sound_file, gain_db)
         except Exception as e:
             logger.bind(tag=TAG).warning(f"Thinking loop sound decode failed: {e}")
             return
@@ -196,7 +223,9 @@ class TTSProviderBase(ABC):
         encoder = opus_encoder_utils.OpusEncoderUtils(
             sample_rate=sample_rate, channels=1, frame_size_ms=frame_ms
         )
-        logger.bind(tag=TAG).info("Thinking loop started")
+        logger.bind(tag=TAG).info(
+            f"Thinking loop started ({os.path.basename(sound_file)}, {gain_db:+g}dB)"
+        )
         schedule_start = time.monotonic()
         frame_index = 0
         try:
