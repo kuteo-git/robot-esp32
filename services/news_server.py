@@ -58,7 +58,7 @@ LLM_KEY = os.environ.get("NEWS_LLM_API_KEY", "")  # set in the launchd plist, ne
 # NEWS_ITEMS_TECH / NEWS_ITEMS_SOCIETY / NEWS_ITEMS_WORLD; NEWS_ITEMS_PER_CATEGORY is the fallback
 # for anything not named.
 ITEMS_PER_CATEGORY = int(os.environ.get("NEWS_ITEMS_PER_CATEGORY", "3"))
-_ITEMS = {"tech": 5, "society": 3, "world": 3}
+_ITEMS = {"tech": 5, "society": 2, "world": 2}
 
 
 def _items_for(key):
@@ -269,10 +269,22 @@ def _prompt(period, datestr):
         "nào — kể cả khi hai tin cùng chủ đề hoặc cùng nói về một sản phẩm, hãy đọc riêng từng tin "
         "theo đúng góc nhìn của nó. Tên mục có ghi sẵn số tin (vd 'Tin công nghệ — 5 tin'): đó là "
         "số tin BẮT BUỘC phải có, nhưng chỉ để mày đối chiếu — KHÔNG đọc con số đó thành lời.\n"
+        # Enforcing the per-story count made the model announce ordinals ("Thứ nhất, ... Thứ hai,
+        # ...") -- it read the numbering in the raw data as something to speak. The numbering is
+        # bookkeeping for the model, never for the listener.
+        "CẤM TUYỆT ĐỐI xướng số thứ tự khi đọc: không 'thứ nhất', 'thứ hai', 'tin thứ nhất', "
+        "'mục thứ ba', không đánh số dưới bất kỳ dạng nào. Số trong dữ liệu thô chỉ để mày đếm, "
+        "người nghe KHÔNG được nghe thấy nó.\n"
         f"Mở đầu đúng một câu giới thiệu bản tin {period} hôm nay, rồi vào tin ngay.\n"
-        "Mỗi mục: nói rõ tên mục trước (vd 'Về tin trong nước,' 'Về thời tiết,'), rồi trình bày hơi "
-        "chi tiết, làm rõ vấn đề, đừng chỉ đọc tiêu đề khô khan. Tiêu đề/nội dung tiếng Anh thì "
-        "DỊCH sang tiếng Việt.\n"
+        "VĂN PHONG: viết như biên tập viên thời sự đang dẫn trực tiếp, các tin chảy liền mạch tự "
+        "nhiên chứ không phải đọc danh sách. Vào mỗi mục thì dẫn dắt gọn (vd 'Về tin trong nước,'). "
+        "Sang tin mới thì chuyển ý bằng lời dẫn tự nhiên và ĐA DẠNG, mỗi lần một kiểu khác nhau, "
+        "chọn cách hợp với nội dung tin — ví dụ 'Cũng trong lĩnh vực này,', 'Một thông tin khác "
+        "đáng chú ý,', 'Liên quan đến vấn đề trên,', 'Trong khi đó,', 'Đáng chú ý,' — tuyệt đối "
+        "KHÔNG lặp đi lặp lại một mẫu câu chuyển.\n"
+        "Mỗi tin dẫn theo lối nhà đài: câu đầu nêu thẳng cái quan trọng nhất (ai, việc gì, ở đâu), "
+        "các câu sau mới bổ sung bối cảnh hoặc ý nghĩa. Trình bày hơi chi tiết, làm rõ vấn đề, "
+        "đừng chỉ đọc lại tiêu đề khô khan. Tiêu đề/nội dung tiếng Anh thì DỊCH sang tiếng Việt.\n"
         f"GIỚI HẠN ĐỘ DÀI: mỗi tin tối đa {SENTENCES_PER_ITEM} câu — bản tin để nghe, dài dòng là "
         "mệt tai. Thời tiết và lịch cúp điện thì gọn hơn nữa, chỉ nêu ý chính.\n"
         "Câu ngắn gọn, mỗi câu BẮT BUỘC kết thúc bằng dấu chấm rõ ràng để robot ngắt nhịp đúng.\n"
