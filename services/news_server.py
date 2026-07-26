@@ -72,9 +72,18 @@ TTS_CHUNK_CHARS = int(os.environ.get("NEWS_TTS_CHUNK_CHARS", "350"))
 # Sample rate everything is resampled to before concatenation: the start/end stings are 44.1k
 # stereo while VieNeu returns its own rate, and ffmpeg's concat demuxer requires a uniform format.
 OUT_RATE = int(os.environ.get("NEWS_OUT_RATE", "24000"))
-# Cap on how much the LLM may expand each story. Without it a five-category bulletin ran to ~8.5
-# minutes of speech, which is a lot to sit through over breakfast.
-SENTENCES_PER_ITEM = int(os.environ.get("NEWS_SENTENCES_PER_ITEM", "3"))
+# How far the LLM may expand each story. Given only a ceiling the model sat well under it (~2
+# sentences), so this is a RANGE: the floor is what stops the bulletin coming out clipped, the
+# ceiling is what stopped an early five-category run reaching ~8.5 minutes of speech.
+SENTENCES_MIN = int(os.environ.get("NEWS_SENTENCES_MIN", "3"))
+SENTENCES_PER_ITEM = int(os.environ.get("NEWS_SENTENCES_PER_ITEM", "4"))
+
+# Article bodies are fetched per aired story so the model has something to write FROM -- RSS
+# summaries run 100-200 chars, which is not enough for several sentences of real reporting.
+# NEWS_FULLTEXT=0 falls back to summaries only (faster, thinner bulletin).
+FULLTEXT = os.environ.get("NEWS_FULLTEXT", "1") != "0"
+ARTICLE_CHARS = int(os.environ.get("NEWS_ARTICLE_CHARS", "1500"))
+ARTICLE_TIMEOUT = float(os.environ.get("NEWS_ARTICLE_TIMEOUT", "8"))
 
 _UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
 _ATOM = "{http://www.w3.org/2005/Atom}"
@@ -124,16 +133,77 @@ def _fetch_feed(url, limit):
             summ = e.find(_ATOM + "summary")
             cont = e.find(_ATOM + "content")
             desc = (summ.text if summ is not None else None) or (cont.text if cont is not None else "")
-            out.append({"title": _clean(t.text) if t is not None else "", "description": _clean(desc)[:300]})
+            ln = e.find(_ATOM + "link")
+            out.append({
+                "title": _clean(t.text) if t is not None else "",
+                "description": _clean(desc)[:300],
+                "link": (ln.get("href") or "").strip() if ln is not None else "",
+            })
     else:
         for item in root.findall(".//item")[:limit]:
             t = item.find("title")
             d = item.find("description")
+            ln = item.find("link")
             out.append({
                 "title": _clean(t.text) if t is not None else "",
                 "description": _clean(d.text)[:300] if d is not None else "",
+                "link": (ln.text or "").strip() if ln is not None else "",
             })
     return [x for x in out if x["title"]]
+
+
+# Boilerplate that sits in <p> tags on the article page and says nothing about the story.
+_JUNK = re.compile(
+    r"(?i)(vox media may earn a commission|ethics statement|subscribe|newsletter|"
+    r"đăng ký|bản quyền|copyright|all rights reserved|theo dõi chúng tôi)"
+)
+
+
+def _article_text(url):
+    """Pulls the article body, because the RSS summary alone is too thin to speak from.
+
+    VnExpress gives 100-180 characters per story and tinhte caps at ~200 — a couple of sentences of
+    real reporting needs more than that, and asked to expand on 120 characters the model pads or
+    invents. Deliberately generic (<p> tags over a threshold) rather than per-site selectors: five
+    feeds across three sites would otherwise mean five brittle rules. Returns "" on any failure,
+    and the caller keeps the RSS description.
+    """
+    r = requests.get(url, timeout=ARTICLE_TIMEOUT, headers=_UA)
+    r.raise_for_status()
+    soup = BeautifulSoup(r.content, "html.parser")
+    for tag in soup(["script", "style", "figure", "figcaption", "aside", "nav", "footer", "header"]):
+        tag.decompose()
+    paras = []
+    for p in soup.find_all("p"):
+        txt = " ".join(p.get_text(" ", strip=True).split())
+        # Short <p>s are captions, bylines and share prompts; long ones are the actual reporting.
+        if len(txt) > 60 and not _JUNK.search(txt):
+            paras.append(txt)
+    return " ".join(paras)[:ARTICLE_CHARS]
+
+
+def _add_bodies(items):
+    """Fetches article bodies for the CHOSEN stories only, in parallel.
+
+    Runs after the round-robin pick, so it costs one request per story that actually airs rather
+    than one per story fetched. Keeps whichever text is longer: tinhte renders its body outside
+    <p> tags and comes back shorter than its own RSS summary.
+    """
+    if not FULLTEXT:
+        return
+
+    def one(it):
+        if not it.get("link"):
+            return
+        try:
+            body = _article_text(it["link"])
+            if len(body) > len(it["description"]):
+                it["description"] = body
+        except Exception as e:
+            log(f"bài lỗi {it['link']}: {e}", "WARNING")
+
+    with ThreadPoolExecutor(max_workers=max(1, len(items))) as ex:
+        list(ex.map(one, items))
 
 
 def _fetch_rss_category(key):
@@ -168,6 +238,7 @@ def _fetch_rss_category(key):
         i += 1
     if not merged:
         return None
+    _add_bodies(merged)
     return "\n".join(
         f"{n}. {it['title']}." + (f" {it['description']}" if it["description"] else "")
         for n, it in enumerate(merged, 1)
@@ -289,7 +360,9 @@ def _prompt(period, datestr):
         f"Open with exactly ONE sentence introducing today's {period} bulletin, then go straight "
         "into the news.\n"
         "STYLE: write like a live news anchor — the stories must flow into one another, never read "
-        "as a list. Introduce each section briefly (e.g. 'Về tin trong nước,'). Move between "
+        "as a list. Introduce each section briefly and run that lead-in STRAIGHT INTO the first "
+        "story of the section, in the same sentence (e.g. 'Về tin trong nước, <first story>'). "
+        "A section lead-in must NEVER stand alone as its own sentence or line. Move between "
         "stories with natural, VARIED lead-ins, a different one each time, chosen to fit the story "
         "— e.g. 'Cũng trong lĩnh vực này,', 'Một thông tin khác đáng chú ý,', 'Liên quan đến vấn đề "
         "trên,', 'Trong khi đó,', 'Đáng chú ý,'. NEVER reuse the same transition pattern.\n"
@@ -297,9 +370,12 @@ def _prompt(period, datestr):
         "what, where), later sentences add context or significance. Give some real detail and make "
         "the point clear — do not just restate the headline. TRANSLATE any English source material "
         "into Vietnamese.\n"
-        f"LENGTH LIMIT: at most {SENTENCES_PER_ITEM} sentences per story — this is meant to be "
-        "listened to, and rambling is tiring. Weather and power-outage sections: shorter still, "
-        "main points only.\n"
+        f"LENGTH: give each story {SENTENCES_MIN} to {SENTENCES_PER_ITEM} sentences — {SENTENCES_MIN} "
+        "is a FLOOR, not a target, so do not cut a story short. The raw material carries real detail "
+        "from the article: use it, name the specifics (figures, places, people, causes, "
+        "consequences) instead of summarising the headline back. Do not pad or invent — if a story "
+        "genuinely offers little, say what it does offer plainly. Weather and power-outage "
+        "sections are the exception: keep those brief, main points only.\n"
         "Keep sentences short, and END EVERY SENTENCE with a clear full stop so the robot phrases "
         "it correctly.\n"
         "ABSOLUTELY no markdown or formatting characters (no **, #, bullets, brackets) — this text "
@@ -308,10 +384,22 @@ def _prompt(period, datestr):
     )
 
 
+_CJK = re.compile(r"[぀-ヿ㐀-䶿一-鿿豈-﫿]")
+
+
 def _strip_markdown(text):
-    """The prompt forbids markdown; this catches what the model emits anyway (seen: **bold**)."""
+    """The prompt forbids markdown; this catches what the model emits anyway (seen: **bold**).
+
+    Also drops CJK characters. The model behind this endpoint occasionally substitutes a Chinese
+    character mid-Vietnamese-word ("chi战sĩ" for "chiến sĩ") — rare, but VieNeu has no voice for it
+    and it derails the sentence being spoken. Dropping the character leaves a misspelling the TTS
+    still reads as Vietnamese, which is the least-bad outcome; it is logged so it stays visible.
+    """
     for token in ("**", "__", "###", "##", "# "):
         text = text.replace(token, "")
+    if (found := _CJK.findall(text)):
+        log(f"LLM chèn ký tự CJK, đã bỏ: {''.join(found)!r}", "WARNING")
+        text = _CJK.sub("", text)
     return re.sub(r"^\s*[-*]\s+", "", text, flags=re.M).strip()
 
 
