@@ -104,7 +104,7 @@ def _generate(categories):
     return r.json()
 
 
-async def _run(conn):
+async def _run(conn, spoken_filler=True):
     try:
         cfg = news_store.load_schedule(conn.device_id) or {}
         categories = cfg.get("categories") or []
@@ -121,10 +121,12 @@ async def _run(conn):
 
         # Keep the speaker's "thinking" loop running through the wait, exactly like any other
         # request that takes a while. It stops by itself: the first real audio frame -- the start
-        # sting -- goes through handle_opus, which calls stop_thinking_loop(). Started only after
-        # the spoken filler has had time to synthesize, because that filler's own frames would
-        # otherwise stop the loop the moment it began.
-        await asyncio.sleep(FILLER_GRACE_S)
+        # sting -- goes through handle_opus, which calls stop_thinking_loop(). The grace period
+        # exists only to let a spoken filler synthesize first, since that filler's own frames would
+        # otherwise stop the loop the moment it began -- with no filler (the direct command path,
+        # which skips the LLM entirely) it would just be dead air, so skip it.
+        if spoken_filler:
+            await asyncio.sleep(FILLER_GRACE_S)
         try:
             conn.tts.start_thinking_loop()
         except Exception as e:
@@ -152,11 +154,13 @@ async def _run(conn):
 
 
 @register_function("get_news_bulletin", get_news_bulletin_desc, ToolType.SYSTEM_CTL)
-def get_news_bulletin(conn: "ConnectionHandler"):
+def get_news_bulletin(conn: "ConnectionHandler", spoken_filler=True):
+    """spoken_filler=False when called directly by intentHandler.check_direct_news, which bypasses
+    the LLM: nothing is said first, so there is no filler to leave room for."""
     try:
         if not conn.loop.is_running():
             return ActionResponse(action=Action.RESPONSE, response="Hệ thống đang bận, lát thử lại nha")
-        conn.loop.create_task(_run(conn))
+        conn.loop.create_task(_run(conn, spoken_filler=spoken_filler))
         # Answer immediately so the wait isn't silent (same idea as play_youtube's "đang tải"),
         # then the finished bulletin is queued onto this same turn when the service returns.
         return ActionResponse(

@@ -8,7 +8,7 @@ if TYPE_CHECKING:
 from core.utils.dialogue import Message
 from core.providers.tts.dto.dto import ContentType
 from core.handle.helloHandle import checkWakeupWords
-from plugins_func.register import Action, ActionResponse
+from plugins_func.register import Action, ActionResponse, all_function_registry
 from core.handle.sendAudioHandle import send_stt_message
 from core.handle.reportHandle import enqueue_tool_report
 from core.utils.util import remove_punctuation_and_length
@@ -37,6 +37,9 @@ async def handle_user_intent(conn: "ConnectionHandler", text):
     if await checkWakeupWords(conn, filtered_text):
         return True
 
+    if await check_direct_news(conn, filtered_text):
+        return True
+
     if conn.intent_type == "function_call":
         # 使用支持function calling的聊天方法,不再进行意图分析
         return False
@@ -61,6 +64,57 @@ async def check_direct_exit(conn: "ConnectionHandler", text):
             await conn.close()
             return True
     return False
+
+
+# Phrases that mean exactly one thing and should never be interpreted. Kept beside the exit and
+# wake-word checks above because it is the same idea: a fixed command, handled by code.
+NEWS_TOOL = "get_news_bulletin"
+# Written with spaces for readability, matched without: remove_punctuation_and_length strips
+# spaces as well as punctuation, so its output is "đọcbảntin" and a spaced constant never matches
+# (the same reason cmd_exit entries are written unspaced in config).
+DIRECT_NEWS_CMDS = frozenset(
+    c.replace(" ", "")
+    for c in ("đọc bản tin", "doc ban tin", "nghe bản tin", "nghe ban tin")
+)
+
+
+async def check_direct_news(conn: "ConnectionHandler", text):
+    """Run the news bulletin straight away, with no LLM turn in front of it.
+
+    The daily alarm fires this phrase as a typed query, so it used to go through the LLM like any
+    sentence -- and the LLM, in persona, streamed a line of its own before emitting the tool call.
+    At 06:30 the speaker would suddenly announce itself, which is startling rather than pleasant,
+    and the bulletin could not even begin until that turn had finished. There is nothing to
+    interpret here: the phrase has exactly one meaning, so it goes straight to the tool. That also
+    removes an LLM round-trip from the wait and makes the schedule, the panel's test button and
+    saying it out loud behave identically.
+    """
+    _, text = remove_punctuation_and_length(text)
+    if text.lower().strip() not in DIRECT_NEWS_CMDS:
+        return False
+    func_item = all_function_registry.get(NEWS_TOOL)
+    if func_item is None or not _tool_enabled(conn, NEWS_TOOL):
+        # Not this device's tool -> fall through, so a device without it still gets whatever the
+        # normal path would have said rather than silently doing nothing.
+        return False
+    conn.logger.bind(tag=TAG).info(f"Direct news command: {text!r} (bỏ qua LLM)")
+    await send_stt_message(conn, text)
+    conn.sentence_id = str(uuid.uuid4().hex)
+    # SYSTEM_CTL takes conn (see ServerPluginExecutor.execute). It returns immediately after
+    # scheduling the work, so there is nothing to await here. spoken_filler=False: nothing was
+    # said before this, so the tool should not hold back waiting for a filler that never comes.
+    func_item.func(conn, spoken_filler=False)
+    return True
+
+
+def _tool_enabled(conn: "ConnectionHandler", name):
+    try:
+        return any(
+            (d.get("function") or {}).get("name") == name
+            for d in conn.func_handler.get_functions() or []
+        )
+    except Exception:
+        return False
 
 
 async def analyze_intent_with_llm(conn: "ConnectionHandler", text):
