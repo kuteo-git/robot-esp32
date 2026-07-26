@@ -353,6 +353,53 @@ def _fix_cues(text):
 _ALLCAPS_WORD = re.compile(r"[%s]+" % _VN_LETTER)
 
 
+# ── Abbreviation expansion (runs BEFORE _fix_allcaps) ────────────────────────────
+# VieNeu reads an all-caps token letter-by-letter, and _fix_allcaps below defuses that by
+# lowering it ("UBND" -> "Ubnd") -- which then gets read as a nonsense *word*. Neither is what a
+# listener wants, so known abbreviations are spelled out to real Vietnamese first. Order matters:
+# this must run before _fix_allcaps, or there is no longer an all-caps token left to match.
+#
+# Cost: one precompiled alternation, one pass over the text -- microseconds against ~1-2s of
+# synthesis. Longest-first so "TP.HCM" wins over a bare "TP" and "HĐND" over "HN".
+_ABBREV = {
+    # Hành chính - nhà nước
+    "UBND": "Ủy ban nhân dân", "HĐND": "Hội đồng nhân dân", "UBKT": "Ủy ban Kiểm tra",
+    "TW": "Trung ương", "TƯ": "Trung ương", "BCH": "Ban Chấp hành", "BTV": "Ban Thường vụ",
+    "QP-AN": "Quốc phòng An ninh", "CNXH": "Chủ nghĩa xã hội", "CSGT": "Cảnh sát giao thông",
+    "CCVC": "Cán bộ công chức",
+    # Địa danh - tổ chức
+    "TP.HCM": "Thành phố Hồ Chí Minh", "TPHCM": "Thành phố Hồ Chí Minh",
+    "HCM": "Hồ Chí Minh", "HN": "Hà Nội", "VN": "Việt Nam",
+    # NOTE: ĐH is ambiguous (Đại học / Điện lực). "Đại học" is overwhelmingly the news sense.
+    "ĐH": "Đại học", "THPT": "Trung học phổ thông", "THCS": "Trung học cơ sở",
+    "LĐLĐ": "Liên đoàn Lao động", "ĐTN": "Đoàn Thanh niên",
+    "HLHPN": "Hội Liên hiệp Phụ nữ", "QĐND": "Quân đội nhân dân", "CAND": "Công an nhân dân",
+    # Seen in this deployment's own TTS traffic (counted from the logs)
+    "AI": "Ây Ai", "CEO": "Xi I Âu", "USD": "đô la Mỹ", "VND": "Việt Nam đồng",
+    "KCN": "khu công nghiệp", "DJI": "Đi Giây Ai", "LGBT": "Eo Zi Bi Ti",
+    # Common in Vietnamese news copy
+    "BHXH": "Bảo hiểm xã hội", "GTVT": "Giao thông vận tải", "NXB": "Nhà xuất bản",
+    "TNGT": "tai nạn giao thông", "ATGT": "an toàn giao thông",
+    "PCCC": "phòng cháy chữa cháy", "BĐS": "bất động sản", "CNTT": "công nghệ thông tin",
+    "WHO": "Tổ chức Y tế Thế giới", "GDP": "Gi Đi Pi",
+}
+# Neither \b nor [A-Z] can be trusted here: Đ/Ư are word characters, and TP.HCM carries a dot
+# inside the token. Explicit lookarounds for "not adjacent to another letter or digit" instead.
+_ABBREV_RE = re.compile(
+    r"(?<![0-9A-Za-zÀ-ỹĐđ])(" + "|".join(
+        re.escape(k) for k in sorted(_ABBREV, key=len, reverse=True)
+    ) + r")(?![0-9A-Za-zÀ-ỹĐđ])"
+)
+
+
+def _expand_abbrev(text):
+    """Case-sensitive on purpose: only the upper-case forms are abbreviations. Lower-case 'ai'
+    (Vietnamese for "who") and 'hn' must be left alone."""
+    if not text:
+        return text
+    return _ABBREV_RE.sub(lambda m: _ABBREV[m.group(1)], text)
+
+
 def _fix_allcaps(text):
     """A word in FULL UPPERCASE (e.g. 'CHAO') gets mispronounced by VieNeu (spelled out
     letter-by-letter) -> lower it to just the first letter capitalized ('Chao'). A word with
@@ -413,6 +460,9 @@ async def synth(req: Request):
     text = re.sub(r"[　-鿿＀-￯]", " ", text).strip()
     # Normalize emotion tags the LLM wrote with missing brackets ([cười / cười] -> [cười])
     text = _fix_cues(text)
+    # Known abbreviations -> spoken Vietnamese. MUST precede _fix_allcaps, which would otherwise
+    # have already collapsed "UBND" into the unreadable word "Ubnd".
+    text = _expand_abbrev(text)
     # A word in FULL UPPERCASE -> only the first letter capitalized (VieNeu mispronounces/spells out full-caps words)
     text = _fix_allcaps(text)
     if not text:
