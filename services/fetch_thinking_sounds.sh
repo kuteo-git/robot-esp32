@@ -14,8 +14,8 @@
 # be tuned without re-downloading.
 set -euo pipefail
 
-PLAYLIST="${1:-https://youtube.com/playlist?list=PLIILL6veL783j4HrgzF23SH7mhby28uF5}"
-COUNT="${2:-10}"
+PLAYLIST="${1:-https://youtube.com/playlist?list=PLIILL6veL783kKkdiIybbxARNY9bAVQYe}"
+COUNT="${2:-40}"
 OUT_DIR="${THINKING_POOL_DIR:-$(cd "$(dirname "$0")/.." && pwd)/xiaozhi-esp32-server/main/xiaozhi-server/config/assets/thinking/pool}"
 
 CLIP_START_S="${CLIP_START_S:-20}"   # skip the intro fade
@@ -45,6 +45,9 @@ echo "yt-dlp   : $YTDLP ($best)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$OUT_DIR"
+# Clear the pool first: the server cycles over whatever is in this directory, so leftovers from a
+# previous (longer) playlist would stay in rotation forever.
+rm -f "$OUT_DIR"/bed*.wav
 
 echo "Playlist : $PLAYLIST"
 echo "Lấy      : $COUNT bài -> $OUT_DIR"
@@ -74,4 +77,4 @@ done
 
 echo
 echo "Xong: $n clip trong $OUT_DIR"
-echo "Trỏ thinking_loop_sound_file tới thư mục này để bật chế độ chọn ngẫu nhiên."
+echo "Trỏ thinking_loop_sound_file tới thư mục này để bật chế độ xoay vòng (không lặp)."

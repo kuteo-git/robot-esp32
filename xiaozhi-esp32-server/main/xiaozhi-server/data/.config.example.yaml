@@ -45,11 +45,13 @@ exit_goodbye_voice: "config/assets/goodbye.wav"
 listen_start_sound: true
 listen_start_voice: "config/assets/listen_ding.wav"
 # ---------- Tiếng "thinking" lặp khi robot đang xử lý (LLM+TTS) cho tới khi có câu trả lời ----------
-# Trỏ tới 1 FILE (luôn dùng clip đó) hoặc 1 THƯ MỤC (mỗi lượt bốc ngẫu nhiên 1 clip).
+# Trỏ tới 1 FILE (luôn dùng clip đó) hoặc 1 THƯ MỤC (XOAY VÒNG, mỗi lượt 1 clip — chỉ lặp lại
+# một clip sau khi tất cả các clip khác đã được phát; bốc ngẫu nhiên thì sẽ bị trùng).
 # Tạo lại kho clip: services/fetch_thinking_sounds.sh (audio không nằm trong git).
 thinking_loop_sound: true
 thinking_loop_sound_file: "config/assets/thinking/pool"
-thinking_loop_gain_db: -12   # tiếng nền nên nằm DƯỚI mọi thứ khác; bớt âm = to hơn
+thinking_loop_sound_fallback: "config/assets/thinking/loading.mp3"   # kho rỗng/thiếu -> dùng tiếng loading cũ của loa (giữ nguyên mức, không áp gain)
+thinking_loop_gain_db: -18   # tiếng nền nên nằm DƯỚI mọi thứ khác; bớt âm = to hơn
 # ---------- Giữ phiên trò chuyện lâu hơn ----------
 # Im KHÔNG nói gì quá ngần này (giây) thì server tự kết thúc phiên. Mặc định 120s.
 close_connection_no_voice_time: 60
