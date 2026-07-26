@@ -150,6 +150,7 @@ Intent:
       - play_music_room
       - play_youtube
       - get_news_vietnam
+      - get_news_bulletin   # bản tin đầy đủ đã biên tập (news service :8014) — cần services/run_news.sh chạy
       - get_weather
       - get_power_outage
 

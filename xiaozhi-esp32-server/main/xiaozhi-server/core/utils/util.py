@@ -87,7 +87,11 @@ def get_ip_info(ip_addr, logger):
         if is_private_ip(ip_addr):
             ip_addr = ""
         url = f"https://whois.pconline.com.cn/ipJson.jsp?json=true&ip={ip_addr}"
-        resp = requests.get(url).json()
+        # Timeout is NOT optional here: this runs inline while the hello handshake is being
+        # processed, and the default (none) means "block until the OS gives up". Observed for real:
+        # when this host was unreachable the handshake stalled ~32s, well past the client's 10s
+        # hello timeout, so the device gave up and the turn was silently lost.
+        resp = requests.get(url, timeout=(2, 3)).json()
         ip_info = {"city": resp.get("city")}
 
         # 存入缓存
@@ -95,6 +99,12 @@ def get_ip_info(ip_addr, logger):
         return ip_info
     except Exception as e:
         logger.bind(tag=TAG).error(f"Error getting client ip info: {e}")
+        # Cache the failure too, otherwise every later connection pays the timeout again for a
+        # lookup that only decorates the prompt with a city name.
+        try:
+            cache_manager.set(CacheType.IP_INFO, ip_addr, {})
+        except Exception:
+            pass
         return {}
 
 

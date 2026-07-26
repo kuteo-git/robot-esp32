@@ -151,6 +151,18 @@ def _fetch_detail(url, fallback=""):
         return fallback
 
 
+def fetch_category(config, key, count=3):
+    """Public helper for callers outside the LLM-tool flow (e.g. the scheduled news bulletin in
+    core/news/bulletin.py) that need ONE category fetched deterministically, honoring the same
+    plugins.get_news_vietnam.<key>_feeds config overrides as the get_news_vietnam tool itself.
+    [config] is the merged server/device config dict (conn.config or the global server config)."""
+    cfg = (config or {}).get("plugins", {}).get("get_news_vietnam", {}) or {}
+    feeds = dict(_DEFAULT_FEEDS)
+    if cfg.get(key + "_feeds"):
+        feeds[key] = cfg[key + "_feeds"]
+    return _fetch_multi(feeds.get(key, []), count)
+
+
 def _category_key(category):
     if not category:
         return _DEFAULT_CATEGORY

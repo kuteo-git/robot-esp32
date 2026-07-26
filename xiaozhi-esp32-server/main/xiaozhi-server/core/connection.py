@@ -165,6 +165,7 @@ class ConnectionHandler:
         # 处理TTS响应没有文本返回
         self.tts_MessageText = ""
 
+
         # iot相关变量
         self.iot_descriptors = {}
         self.func_handler = None
@@ -238,6 +239,7 @@ class ConnectionHandler:
 
             # 在后台初始化配置和组件（完全不阻塞主循环）
             asyncio.create_task(self._background_initialize())
+
 
             try:
                 async for message in self.websocket:

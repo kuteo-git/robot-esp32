@@ -47,6 +47,9 @@ services/**/cookies.txt
 # Downloaded songs cache (pytube_api.py) — large binaries, possibly copyrighted, never commit
 services/pytube_cache/
 
+# News bulletin: per-device schedule config (generated at runtime)
+xiaozhi-esp32-server/main/xiaozhi-server/data/news_schedule/
+
 # Git worktrees for isolated agent workspaces
 .worktrees/
 .superpowers/

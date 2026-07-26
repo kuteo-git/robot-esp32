@@ -105,6 +105,7 @@ class WebSocketServer:
                     "authorization"
                 ][0]
 
+
         """处理新连接，每次创建独立的ConnectionHandler"""
         # 先认证，后建立连接
         try:
