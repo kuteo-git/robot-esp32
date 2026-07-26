@@ -222,11 +222,26 @@ def _fetch_one(key):
         return key, None
 
 
+def _story_count(text):
+    """Numbered lines = individual stories. Weather/power blocks are prose and return 0."""
+    return len(re.findall(r"^\d+\.\s", text, re.M))
+
+
 def fetch_blocks(order):
     """Fetches every category in PARALLEL, then returns them in the caller's order."""
     with ThreadPoolExecutor(max_workers=max(1, len(order))) as ex:
         results = dict(ex.map(_fetch_one, order))
-    return [(LABELS.get(k, k), results[k]) for k in order if results.get(k)]
+    out = []
+    for k in order:
+        if not results.get(k):
+            continue
+        label = LABELS.get(k, k)
+        # State the count in the header the model reads. Told only "don't drop a SECTION", it
+        # quietly dropped and merged individual STORIES instead -- five tech items came back as
+        # two, worst when a feed ran several articles on one event and merging looked sensible.
+        n = _story_count(results[k])
+        out.append((f"{label} — {n} tin" if n > 1 else label, results[k]))
+    return out
 
 
 # ── LLM rewrite ───────────────────────────────────────────────────────────────
@@ -249,6 +264,11 @@ def _prompt(period, datestr):
         "chuyên nghiệp, khác hẳn giọng tám chuyện. Dựa vào dữ liệu thô dưới đây (đã chia sẵn từng "
         "mục, ĐÚNG THỨ TỰ cần đọc), viết lại thành MỘT bản tin liền mạch bằng tiếng Việt theo ĐÚNG "
         "THỨ TỰ đó — KHÔNG đổi thứ tự, KHÔNG bỏ mục nào, KHÔNG thêm mục nào ngoài dữ liệu đã cho.\n"
+        "TRONG mỗi mục, MỖI DÒNG ĐÁNH SỐ (1., 2., 3. ...) là MỘT TIN RIÊNG BIỆT: phải đọc ĐỦ tất "
+        "cả, mỗi tin thành một câu chuyện riêng. TUYỆT ĐỐI không gộp hai tin làm một, không bỏ tin "
+        "nào — kể cả khi hai tin cùng chủ đề hoặc cùng nói về một sản phẩm, hãy đọc riêng từng tin "
+        "theo đúng góc nhìn của nó. Tên mục có ghi sẵn số tin (vd 'Tin công nghệ — 5 tin'): đó là "
+        "số tin BẮT BUỘC phải có, nhưng chỉ để mày đối chiếu — KHÔNG đọc con số đó thành lời.\n"
         f"Mở đầu đúng một câu giới thiệu bản tin {period} hôm nay, rồi vào tin ngay.\n"
         "Mỗi mục: nói rõ tên mục trước (vd 'Về tin trong nước,' 'Về thời tiết,'), rồi trình bày hơi "
         "chi tiết, làm rõ vấn đề, đừng chỉ đọc tiêu đề khô khan. Tiêu đề/nội dung tiếng Anh thì "
