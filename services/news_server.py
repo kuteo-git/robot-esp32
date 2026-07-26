@@ -158,6 +158,20 @@ def _fetch_text_service(url):
     return r.content.decode("utf-8", errors="replace").strip() or None
 
 
+def _fetch_power():
+    """Returns None when nothing is scheduled, so the whole section is dropped from the bulletin
+    rather than read out as "về lịch cúp điện, không có lịch cúp điện".
+
+    Keyed off the service's own `count`, not the wording of its text: the phrasing is
+    configuration-dependent (POWER_AREA_LABEL) and would break the moment the area is renamed."""
+    r = requests.get(POWER_URL, timeout=10)
+    r.raise_for_status()
+    data = json.loads(r.content.decode("utf-8", errors="replace"))
+    if not data.get("count"):
+        return None
+    return (data.get("result") or "").strip() or None
+
+
 def _fetch_one(key):
     """Returns (key, text|None). Never raises -- a dead source must not take the bulletin down."""
     t0 = time.perf_counter()
@@ -167,12 +181,17 @@ def _fetch_one(key):
         elif key == "weather":
             text = _fetch_text_service(WEATHER_URL)
         elif key == "power":
-            text = _fetch_text_service(POWER_URL)
+            text = _fetch_power()
         else:
             log(f"mục lạ '{key}', bỏ qua", "WARNING")
             return key, None
         dt = time.perf_counter() - t0
-        log(f"'{key}' {'ok ' + str(len(text)) + ' ký tự' if text else 'RỖNG'} ({dt:.1f}s)")
+        if text:
+            log(f"'{key}' ok {len(text)} ký tự ({dt:.1f}s)")
+        elif key == "power":
+            log(f"'power' không có lịch cúp điện -> bỏ mục này khỏi bản tin ({dt:.1f}s)")
+        else:
+            log(f"'{key}' RỖNG ({dt:.1f}s)")
         return key, text
     except Exception as e:
         log(f"'{key}' lỗi sau {time.perf_counter()-t0:.1f}s: {e}", "WARNING")

@@ -382,7 +382,54 @@ _ABBREV = {
     "TNGT": "tai nạn giao thông", "ATGT": "an toàn giao thông",
     "PCCC": "phòng cháy chữa cháy", "BĐS": "bất động sản", "CNTT": "công nghệ thông tin",
     "WHO": "Tổ chức Y tế Thế giới", "GDP": "Gi Đi Pi",
+    # Khoa học - y tế - tổ chức nghiên cứu
+    "CDC": "Trung tâm Kiểm soát và Phòng ngừa Dịch bệnh",
+    "FDA": "Cục Quản lý Thực phẩm và Dược phẩm",
+    "IPCC": "Ủy ban Liên chính phủ về Biến đổi Khí hậu",
+    "ISS": "Trạm Vũ trụ Quốc tế", "JWST": "Kính viễn vọng Không gian James Webb",
+    "BMI": "chỉ số khối cơ thể", "ICU": "khoa hồi sức tích cực",
+    "DNA": "ADN", "RNA": "ARN", "mRNA": "ARN thông tin",
+    "GS": "Giáo sư", "PGS": "Phó Giáo sư", "TS": "Tiến sĩ", "BS": "Bác sĩ",
+    # Công nghệ (KHÔNG bung phần cứng: RAM/CPU/GPU/SSD giữ ngắn, _fix_allcaps đọc đã ổn)
+    "LLM": "mô hình ngôn ngữ lớn", "NLP": "xử lý ngôn ngữ tự nhiên",
+    "ML": "học máy", "IoT": "Internet vạn vật",
+    "API": "giao diện lập trình ứng dụng", "SDK": "bộ công cụ phát triển phần mềm",
+    "R&D": "nghiên cứu và phát triển", "VR": "thực tế ảo", "AR": "thực tế tăng cường",
+    "5G": "năm G", "6G": "sáu G", "vs.": "so với",
 }
+
+# ── Units: ONLY when they directly follow a number ───────────────────────────────
+# A bare "m", "g" or "A" is a perfectly ordinary character in running text, so these can never be
+# matched as standalone words -- "5 km" expands, a lone "m" in a sentence does not.
+# "K" is deliberately absent: in Vietnamese copy "4K"/"8K" (video) and "5K" (money) are far more
+# common than kelvin, so expanding it would be wrong more often than right.
+_UNITS = {
+    "km/h": "ki-lô-mét trên giờ", "km": "ki-lô-mét", "cm": "xăng-ti-mét",
+    "mm": "mi-li-mét", "nm": "na-nô-mét", "m": "mét", "ha": "héc-ta",
+    "kg": "ki-lô-gam", "mg": "mi-li-gam", "g": "gam",
+    "ml": "mi-li-lít", "l": "lít",
+    "kW": "ki-lô-oát", "MW": "mê-ga-oát", "GW": "ghi-ga-oát", "W": "oát",
+    "kV": "ki-lô-vôn", "mV": "mi-li-vôn", "V": "vôn",
+    "mAh": "mi-li-am-pe giờ", "mA": "mi-li-am-pe", "A": "am-pe",
+    "GHz": "ghi-ga-héc", "MHz": "mê-ga-héc", "kHz": "ki-lô-héc", "Hz": "héc",
+    "GB": "ghi-ga-bai", "MB": "mê-ga-bai", "TB": "tê-ra-bai", "KB": "ki-lô-bai",
+    "°C": "độ C", "°F": "độ F",
+    "kJ": "ki-lô-jun", "kcal": "ki-lô-ca-lo", "cal": "ca-lo", "J": "jun",
+    "kPa": "ki-lô-pát-can", "Pa": "pát-can", "atm": "át-mốt-phe",
+    "kN": "ki-lô-niu-tơn", "N": "niu-tơn",
+    "ppm": "phần triệu", "ppb": "phần tỷ", "mol": "mol",
+}
+_UNIT_RE = re.compile(
+    r"(?<=[0-9])(\s?)(" + "|".join(
+        re.escape(u) for u in sorted(_UNITS, key=len, reverse=True)
+    ) + r")(?![0-9A-Za-zÀ-ỹĐđ])"
+)
+
+
+def _expand_units(text):
+    if not text:
+        return text
+    return _UNIT_RE.sub(lambda m: " " + _UNITS[m.group(2)], text)
 # Neither \b nor [A-Z] can be trusted here: Đ/Ư are word characters, and TP.HCM carries a dot
 # inside the token. Explicit lookarounds for "not adjacent to another letter or digit" instead.
 _ABBREV_RE = re.compile(
@@ -463,6 +510,7 @@ async def synth(req: Request):
     # Known abbreviations -> spoken Vietnamese. MUST precede _fix_allcaps, which would otherwise
     # have already collapsed "UBND" into the unreadable word "Ubnd".
     text = _expand_abbrev(text)
+    text = _expand_units(text)
     # A word in FULL UPPERCASE -> only the first letter capitalized (VieNeu mispronounces/spells out full-caps words)
     text = _fix_allcaps(text)
     if not text:
