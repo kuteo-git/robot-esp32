@@ -53,7 +53,19 @@ LLM_BASE = os.environ.get("NEWS_LLM_BASE_URL", "http://127.0.0.1:20128/api/v1")
 LLM_MODEL = os.environ.get("NEWS_LLM_MODEL", "r1-combo")
 LLM_KEY = os.environ.get("NEWS_LLM_API_KEY", "")  # set in the launchd plist, never committed
 
+# How many stories each category contributes. Tech carries three sources so it can afford more
+# without repeating itself; the single-source categories stay tighter. Per-category override:
+# NEWS_ITEMS_TECH / NEWS_ITEMS_SOCIETY / NEWS_ITEMS_WORLD; NEWS_ITEMS_PER_CATEGORY is the fallback
+# for anything not named.
 ITEMS_PER_CATEGORY = int(os.environ.get("NEWS_ITEMS_PER_CATEGORY", "3"))
+_ITEMS = {"tech": 5, "society": 3, "world": 3}
+
+
+def _items_for(key):
+    env = os.environ.get(f"NEWS_ITEMS_{key.upper()}")
+    if env and env.isdigit():
+        return int(env)
+    return _ITEMS.get(key, ITEMS_PER_CATEGORY)
 # VieNeu degrades on very long inputs, so the bulletin is synthesized in sentence-sized chunks and
 # concatenated. ~350 chars keeps each chunk near a second of generation.
 TTS_CHUNK_CHARS = int(os.environ.get("NEWS_TTS_CHUNK_CHARS", "350"))
@@ -126,20 +138,32 @@ def _fetch_feed(url, limit):
 
 def _fetch_rss_category(key):
     urls = FEEDS.get(key, [])
-    per = max(2, (ITEMS_PER_CATEGORY // max(1, len(urls))) + 2)
-    lists = []
-    for u in urls:
+    want = _items_for(key)
+    per = max(2, (want // max(1, len(urls))) + 2)
+
+    def one(u):
         try:
-            lists.append(_fetch_feed(u, per))
+            return _fetch_feed(u, per)
         except Exception as e:
             log(f"feed lỗi {u}: {e}", "WARNING")
+            return []
+
+    # The feeds inside a category are fetched concurrently too, not just the categories. "tech"
+    # pulls three sources and was the slowest category purely because it walked them one at a time,
+    # so its own worst feed set the pace for the entire fetch phase. Order is preserved (executor
+    # .map returns in submission order), which the round-robin merge below depends on.
+    if len(urls) > 1:
+        with ThreadPoolExecutor(max_workers=len(urls)) as ex:
+            lists = list(ex.map(one, urls))
+    else:
+        lists = [one(u) for u in urls]
     # Round-robin so a multi-source category (tech) mixes sources instead of draining the first.
     merged, i = [], 0
-    while len(merged) < ITEMS_PER_CATEGORY and any(i < len(l) for l in lists):
+    while len(merged) < want and any(i < len(l) for l in lists):
         for l in lists:
             if i < len(l):
                 merged.append(l[i])
-                if len(merged) >= ITEMS_PER_CATEGORY:
+                if len(merged) >= want:
                     break
         i += 1
     if not merged:
@@ -423,6 +447,32 @@ def health():
         "start_wav": os.path.exists(START_WAV), "end_wav": os.path.exists(END_WAV),
         "cache_ttl_s": CACHE_TTL_SEC,
     }
+
+
+@app.post("/text")
+async def text_only(req: Request):
+    """Fetch + edit only -- no synthesis. The robot streams this through its own TTS pipeline so
+    speech starts on the first sentence instead of after the whole bulletin has been rendered,
+    which is most of the wait. /generate (pre-rendered single file) is kept for callers that want
+    a finished audio file."""
+    body = await req.json()
+    cats = body.get("categories") or []
+    order = [c["key"] for c in cats if isinstance(c, dict) and c.get("enabled") and c.get("key")]
+    if not order:
+        return JSONResponse({"ok": False, "error": "no enabled categories"}, status_code=400)
+    t0 = time.perf_counter()
+    log(f"soạn văn bản bản tin: mục={order}")
+    blocks = fetch_blocks(order)
+    if not blocks:
+        log("mọi nguồn đều hỏng/rỗng", "ERROR")
+        return JSONResponse({"ok": False, "error": "all sources failed"}, status_code=502)
+    try:
+        text = rewrite(blocks)
+    except Exception as e:
+        log(f"LLM lỗi ({e}) -> dùng bản thô", "ERROR")
+        text = "\n".join(f"Về {label.lower()}. {t}" for label, t in blocks)
+    log(f"XONG văn bản: {len(text)} ký tự (tổng {time.perf_counter()-t0:.1f}s)")
+    return {"ok": True, "text": text, "start_wav": START_WAV, "end_wav": END_WAV}
 
 
 @app.post("/generate")

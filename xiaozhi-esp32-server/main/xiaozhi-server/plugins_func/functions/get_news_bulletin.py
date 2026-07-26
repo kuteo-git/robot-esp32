@@ -33,6 +33,9 @@ NEWS_SERVICE = os.environ.get("NEWS_SERVICE_URL", "http://127.0.0.1:8014")
 # Generation is fetch + one LLM pass + chunked TTS; a five-category bulletin is comfortably the
 # slowest case, so allow well beyond the ~45s a typical one takes.
 GENERATE_TIMEOUT = int(os.environ.get("NEWS_GENERATE_TIMEOUT", "300"))
+# Head start for the spoken filler ("chờ tao soạn bản tin") before the thinking loop is armed --
+# the filler's own audio frames stop the loop, so arming it any earlier is self-defeating.
+FILLER_GRACE_S = float(os.environ.get("NEWS_FILLER_GRACE_S", "2.5"))
 
 get_news_bulletin_desc = {
     "type": "function",
@@ -52,29 +55,31 @@ get_news_bulletin_desc = {
 }
 
 
-def _queue_file(conn, path):
-    """Plays the bulletin as a turn of its OWN: fresh sentence_id, FIRST(ACTION) -> FILE ->
-    LAST(ACTION).
+def _queue_bulletin(conn, text, start_wav, end_wav, voice):
+    """One turn: FIRST -> start sting -> the bulletin as TEXT -> end sting -> LAST.
 
-    By the time the file is ready the turn that ran the tool has long since closed (its LAST went
-    out with the "chờ tao soạn" filler, ~20-45s earlier). Queuing the audio bare onto that dead
-    turn does play it, but the device never receives the closing signal, so when the bulletin ends
-    it just sits there instead of going back to listening. The explicit LAST is what makes
-    sendAudioHandle emit the "stop" the client waits for.
+    The text is queued rather than pre-rendered audio, so the TTS pipeline synthesizes it segment
+    by segment and the speaker starts on the first sentence instead of waiting for the whole
+    bulletin to render -- which was over a third of the total wait.
+
+    The voice rides on FIRST (see TTSMessageDTO.voice): it applies for this turn only, so the
+    bulletin reads in its own voice without disturbing the assistant's normal one.
     """
     sentence_id = uuid.uuid4().hex
     conn.sentence_id = sentence_id
     q = conn.tts.tts_text_queue
-    q.put(TTSMessageDTO(
-        sentence_id=sentence_id, sentence_type=SentenceType.FIRST, content_type=ContentType.ACTION,
-    ))
-    q.put(TTSMessageDTO(
-        sentence_id=sentence_id, sentence_type=SentenceType.MIDDLE,
-        content_type=ContentType.FILE, content_file=path,
-    ))
-    q.put(TTSMessageDTO(
-        sentence_id=sentence_id, sentence_type=SentenceType.LAST, content_type=ContentType.ACTION,
-    ))
+
+    def put(stype, ctype, **kw):
+        q.put(TTSMessageDTO(sentence_id=sentence_id, sentence_type=stype, content_type=ctype, **kw))
+
+    put(SentenceType.FIRST, ContentType.ACTION, voice=voice or None)
+    if start_wav and os.path.exists(start_wav):
+        put(SentenceType.MIDDLE, ContentType.FILE, content_file=start_wav)
+    conn.tts.store_tts_text(sentence_id, text)
+    put(SentenceType.MIDDLE, ContentType.TEXT, content_detail=text)
+    if end_wav and os.path.exists(end_wav):
+        put(SentenceType.MIDDLE, ContentType.FILE, content_file=end_wav)
+    put(SentenceType.LAST, ContentType.ACTION)
 
 
 def _say(conn, text):
@@ -89,10 +94,10 @@ def _say(conn, text):
     )
 
 
-def _generate(categories, voice):
+def _generate(categories):
     r = requests.post(
-        f"{NEWS_SERVICE}/generate",
-        json={"categories": categories, "voice": voice},
+        f"{NEWS_SERVICE}/text",
+        json={"categories": categories},
         timeout=GENERATE_TIMEOUT,
     )
     r.raise_for_status()
@@ -114,25 +119,33 @@ async def _run(conn):
         enabled = [c["key"] for c in categories if c.get("enabled")]
         logger.bind(tag=TAG).info(f"news bulletin: gọi service, mục={enabled} giọng={voice!r}")
 
-        data = await asyncio.to_thread(_generate, categories, voice)
-        if not data.get("ok") or not data.get("audio_path"):
+        # Keep the speaker's "thinking" loop running through the wait, exactly like any other
+        # request that takes a while. It stops by itself: the first real audio frame -- the start
+        # sting -- goes through handle_opus, which calls stop_thinking_loop(). Started only after
+        # the spoken filler has had time to synthesize, because that filler's own frames would
+        # otherwise stop the loop the moment it began.
+        await asyncio.sleep(FILLER_GRACE_S)
+        try:
+            conn.tts.start_thinking_loop()
+        except Exception as e:
+            logger.bind(tag=TAG).warning(f"news bulletin: không bật được tiếng chờ: {e}")
+
+        data = await asyncio.to_thread(_generate, categories)
+        if not data.get("ok") or not data.get("text"):
             logger.bind(tag=TAG).error(f"news bulletin: service trả lỗi: {data}")
+            conn.tts.stop_thinking_loop()
             _say(conn, "Tao soạn bản tin không được, lát thử lại nghen.")
             return
 
-        path = data["audio_path"]
-        if not os.path.exists(path):
-            logger.bind(tag=TAG).error(f"news bulletin: không thấy file {path}")
-            _say(conn, "Tao soạn bản tin không được, lát thử lại nghen.")
-            return
-
+        text = data["text"]
         logger.bind(tag=TAG).info(
-            f"news bulletin: phát {path} ({data.get('duration_s')}s, cached={data.get('cached')})"
+            f"news bulletin: đọc {len(text)} ký tự, giọng={voice!r} (đọc trôi, không render sẵn)"
         )
-        _queue_file(conn, path)
+        _queue_bulletin(conn, text, data.get("start_wav"), data.get("end_wav"), voice)
     except Exception as e:
         logger.bind(tag=TAG).error(f"news bulletin lỗi: {e}")
         try:
+            conn.tts.stop_thinking_loop()   # else it would keep looping with nothing coming
             _say(conn, "Tao soạn bản tin không được, lát thử lại nghen.")
         except Exception:
             pass

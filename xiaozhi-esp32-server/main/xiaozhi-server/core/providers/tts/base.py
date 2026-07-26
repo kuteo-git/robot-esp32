@@ -484,6 +484,13 @@ class TTSProviderBase(ABC):
                 # 过滤旧消息：检查sentence_id是否匹配
                 if message.sentence_id != self.conn.sentence_id:
                     continue
+                # A new turn starts on the provider's default voice; a turn that wants its own
+                # voice carries it on FIRST and keeps it for the rest of the turn. Safe without
+                # locking: this thread is the only consumer, and it handles messages in order.
+                if message.sentence_type == SentenceType.FIRST:
+                    self.current_voice = None
+                if getattr(message, "voice", None):
+                    self.current_voice = message.voice
                 if message.sentence_type == SentenceType.FIRST:
                     self.current_sentence_id = message.sentence_id
                     self.tts_stop_request = False

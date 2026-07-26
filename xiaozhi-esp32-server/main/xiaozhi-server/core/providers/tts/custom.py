@@ -37,6 +37,13 @@ class TTSProvider(TTSProviderBase):
                 v = v.replace("{prompt_text}", text)
             request_params[k] = v
 
+        # Per-turn voice (see TTSMessageDTO.voice). Without this the request carries only the text
+        # and VieNeu falls back to whatever voice is globally selected, so a bulletin could not be
+        # read in its own voice while the assistant keeps its normal one.
+        voice = getattr(self, "current_voice", None)
+        if voice:
+            request_params.setdefault("voice", voice)
+
         if self.method.upper() == "POST":
             resp = requests.post(self.url, json=request_params, headers=self.headers)
         else:
