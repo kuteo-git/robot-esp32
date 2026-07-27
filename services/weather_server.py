@@ -250,4 +250,4 @@ if __name__ == "__main__":
         refresh_multiday(period)
     threading.Thread(target=_bg_loop, daemon=True).start()
     threading.Thread(target=_bg_loop_multiday, daemon=True).start()
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    uvicorn.run(app, host="0.0.0.0", port=PORT, access_log=False)

@@ -21,7 +21,14 @@ from _logsetup import make_logger, install_request_logging
 
 app = FastAPI()
 log = install_request_logging(app, "myservice")   # one line: sets up both console + request logging
+...
+uvicorn.run(app, host="0.0.0.0", port=PORT, access_log=False)
 ```
+
+`access_log=False` is required — uvicorn's own access log would otherwise print a SECOND line
+for every request (`INFO: 127.0.0.1:... "GET /path HTTP/1.1" 200 OK`) alongside our own, which is
+exactly the "log sai" duplicate line this skill exists to prevent. `install_request_logging`
+already gives you method/path/status/duration; uvicorn's built-in one is now redundant.
 
 If you need the logger *before* `app = FastAPI()` exists (e.g. to log config at import time),
 split it:
@@ -72,6 +79,7 @@ timing line, they don't replace it.
 - [ ] `log = install_request_logging(app, "<service>")` right after `app = FastAPI()` (or split
       form if you need `log` earlier).
 - [ ] No local `def log(msg): print(...)` — always go through `_logsetup`.
+- [ ] `uvicorn.run(..., access_log=False)` — otherwise every request logs twice.
 - [ ] Domain log lines still call `log(msg)` / `log(msg, level="ERROR")` as needed.
 - [ ] If the service is meant to be watched live, add its log file to `LOGS` in `log_web.py` and
       to the table in `services/README.md`.

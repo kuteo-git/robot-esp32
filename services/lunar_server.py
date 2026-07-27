@@ -296,4 +296,4 @@ def lunar(request: Request, date: str = None, format: str = "json"):
 
 if __name__ == "__main__":
     log(f"khởi động — port={PORT}")
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    uvicorn.run(app, host="0.0.0.0", port=PORT, access_log=False)

@@ -176,4 +176,4 @@ if __name__ == "__main__":
     log(f"khởi động — URL={URL} ấp='{TARGET_AP}' port={PORT} refresh={REFRESH_SEC}s")
     refresh()
     threading.Thread(target=_bg_loop, daemon=True).start()
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    uvicorn.run(app, host="0.0.0.0", port=PORT, access_log=False)

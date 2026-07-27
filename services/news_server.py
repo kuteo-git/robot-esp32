@@ -804,4 +804,4 @@ async def generate(req: Request):
 
 if __name__ == "__main__":
     log(f"news service :{PORT} (model={LLM_MODEL}, key={'set' if LLM_KEY else 'MISSING'})")
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    uvicorn.run(app, host="0.0.0.0", port=PORT, access_log=False)
