@@ -194,7 +194,7 @@ plugins:
       - "https://genk.vn/rss/tin-ict.rss"
       - "https://www.theverge.com/rss/index.xml"
     society_feeds:
-      - "https://vnexpress.net/rss/thoi-su.rss"
+      - "https://thanhnien.vn/rss/thoi-su.rss"
     world_feeds:
       - "https://vnexpress.net/rss/the-gioi.rss"
     latest_feeds:

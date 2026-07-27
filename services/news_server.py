@@ -5,7 +5,7 @@ STATELESS on purpose: the caller passes the checklist it wants, this service hol
 no per-device config. That keeps it curl-testable on its own, which the in-server version was not.
 
   POST /stream    {"categories":[{"key":"society","enabled":true}, ...]}
-                  -> SSE: {"meta":{...}} then {"text":"<sentence>"} xN then {"done":true}
+                  -> SSE: {"meta":{...}} then {"text":"<sentence>"} / {"gap":true} xN, {"done":true}
                   THE ONE THE ROBOT USES.
   POST /text      same input -> {"ok":true,"text":"<whole bulletin>"} in one piece. Kept because a
                   single JSON blob is far easier to eyeball with curl than a stream.
@@ -79,6 +79,16 @@ def _items_for(key):
     if env and env.isdigit():
         return int(env)
     return _ITEMS.get(key, ITEMS_PER_CATEGORY)
+
+# Stories used to run into one another with no more space than an ordinary sentence break, because
+# every sentence is a separate TTS call and the pipeline plays them back to back. A pause cannot be
+# asked for in the text -- punctuation does not lengthen VieNeu's output -- so the model marks each
+# story boundary with GAP_MARKER, the marker is stripped before the sentence is spoken, and the
+# caller is told to play a silence file there instead. NEWS_GAP_SEC=0 turns the whole thing off.
+GAP_MARKER = "@@"
+GAP_SEC = float(os.environ.get("NEWS_GAP_SEC", "0.9"))
+GAP_WAV = os.environ.get("NEWS_GAP_WAV", "/tmp/robot-news-gap.wav")
+
 # VieNeu degrades on very long inputs, so the bulletin is synthesized in sentence-sized chunks and
 # concatenated. ~350 chars keeps each chunk near a second of generation.
 TTS_CHUNK_CHARS = int(os.environ.get("NEWS_TTS_CHUNK_CHARS", "350"))
@@ -106,7 +116,7 @@ FEEDS = {
         "https://genk.vn/rss/tin-ict.rss",
         "https://www.theverge.com/rss/index.xml",
     ],
-    "society": ["https://vnexpress.net/rss/thoi-su.rss"],
+    "society": ["https://thanhnien.vn/rss/thoi-su.rss"],
     "world": ["https://vnexpress.net/rss/the-gioi.rss"],
 }
 
@@ -171,7 +181,7 @@ _JUNK = re.compile(
 def _article_text(url):
     """Pulls the article body, because the RSS summary alone is too thin to speak from.
 
-    RSS summaries run 100-200 characters (VnExpress gives 100-180) — a couple of sentences of real
+    RSS summaries run 100-200 characters (Thanh Niên/VnExpress give 100-200) — a couple of sentences of real
     reporting needs more than that, and asked to expand on 120 characters the model pads or invents.
     Deliberately generic (<p> tags over a threshold) rather than per-site selectors, so adding a
     feed does not mean adding a rule. Returns "" on any failure, and the caller keeps the RSS
@@ -379,6 +389,12 @@ def _prompt(period, datestr):
         "what, where), later sentences add context or significance. Give some real detail and make "
         "the point clear — do not just restate the headline. TRANSLATE any English source material "
         "into Vietnamese.\n"
+        # A pause is not something the text can ask for -- VieNeu ignores punctuation length -- so
+        # the boundary is marked here and the CALLER inserts silence at it.
+        f"SEPARATOR: between two consecutive stories, and before each new section, output the "
+        f"marker {GAP_MARKER} on its own. It is never spoken and never counts as a sentence — the "
+        "player uses it to leave a short pause. Nowhere else: not inside a story, not at the very "
+        "start, not at the very end.\n"
         f"LENGTH: give each story {SENTENCES_MIN} to {SENTENCES_PER_ITEM} sentences — {SENTENCES_MIN} "
         "is a FLOOR, not a target, so do not cut a story short. The raw material carries real detail "
         "from the article: use it, name the specifics (figures, places, people, causes, "
@@ -406,10 +422,13 @@ def _strip_markdown(text):
     """
     for token in ("**", "__", "###", "##", "# "):
         text = text.replace(token, "")
+    # The gap marker is bookkeeping for the caller; whoever kept it here would have it spoken.
+    text = text.replace(GAP_MARKER, " ")
     if (found := _CJK.findall(text)):
         log(f"LLM chèn ký tự CJK, đã bỏ: {''.join(found)!r}", "WARNING")
         text = _CJK.sub("", text)
-    return re.sub(r"^\s*[-*]\s+", "", text, flags=re.M).strip()
+    text = re.sub(r"^\s*[-*]\s+", "", text, flags=re.M)
+    return re.sub(r"[ \t]{2,}", " ", text).strip()
 
 
 def _extract_reply(body):
@@ -456,7 +475,8 @@ _SENT_END = re.compile(r"(?<=[.!?])(?!\d)\s+")
 
 
 def rewrite_stream(blocks):
-    """Yields COMPLETE SENTENCES as the model produces them, instead of the finished bulletin.
+    """Yields ("text", sentence) for COMPLETE SENTENCES as the model produces them, and ("gap", "")
+    where a story ends, instead of the finished bulletin.
 
     The whole point of the bulletin taking 45s is that almost none of that wait is necessary:
     measured against this model, the first token lands at 1.3s and the first complete sentence at
@@ -480,7 +500,7 @@ def rewrite_stream(blocks):
         stream=True,
     )
     r.raise_for_status()
-    buf, count, chars, first = "", 0, 0, None
+    buf, count, chars, gaps, first = "", 0, 0, 0, None
     # decode_unicode=False + explicit UTF-8: the stream is text/event-stream with no charset, and
     # letting requests guess gives ISO-8859-1, which mangles every Vietnamese character.
     for line in r.iter_lines(decode_unicode=False):
@@ -501,19 +521,26 @@ def rewrite_stream(blocks):
         buf += c
         while (m := _SENT_END.search(buf)):
             sentence, buf = buf[: m.start() + 1].strip(), buf[m.end():]
+            # The marker sits BETWEEN sentences, so it arrives glued to the front of the next one
+            # (or, when the model puts it on its own line, as a sentence that is nothing else).
+            # Either way the pause belongs before whatever text is left.
+            if GAP_MARKER in sentence:
+                gaps += 1
+                yield "gap", ""
             if not (sentence := _strip_markdown(sentence)):
                 continue
             count, chars = count + 1, chars + len(sentence)
             if first is None:
                 first = time.perf_counter() - t0
                 log(f"câu đầu tiên sau {first:.1f}s: {sentence[:60]}")
-            yield sentence
+            yield "text", sentence
     if (tail := _strip_markdown(buf.strip())):
         count, chars = count + 1, chars + len(tail)
-        yield tail
+        yield "text", tail
     if not count:
         raise RuntimeError("LLM trả về rỗng")
-    log(f"LLM xong - stream ({count} câu, {chars} ký tự, {time.perf_counter()-t0:.1f}s)")
+    log(f"LLM xong - stream ({count} câu, {gaps} chỗ nghỉ, {chars} ký tự, "
+        f"{time.perf_counter()-t0:.1f}s)")
 
 
 def rewrite(blocks):
@@ -564,6 +591,31 @@ def _chunks(text, limit):
     if cur.strip():
         out.append(cur.strip())
     return out
+
+
+def _gap_wav():
+    """Path to a GAP_SEC file of silence, generated once and reused; None when disabled/unavailable.
+
+    Silence has to travel as a FILE because that is the only thing the caller can put between two
+    sentences -- its queue carries text to synthesize or audio to play, and there is no "wait" item.
+    Same trick as the start/end stings, which already ride that path.
+    """
+    if GAP_SEC <= 0:
+        return None
+    if os.path.exists(GAP_WAV):
+        return GAP_WAV
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
+             "-i", f"anullsrc=r={OUT_RATE}:cl=mono", "-t", str(GAP_SEC),
+             "-c:a", "pcm_s16le", GAP_WAV],
+            check=True, capture_output=True, timeout=30,
+        )
+        log(f"tạo file khoảng nghỉ {GAP_SEC}s: {GAP_WAV}")
+        return GAP_WAV
+    except Exception as e:
+        log(f"không tạo được file khoảng nghỉ ({e}) -> đọc liền mạch", "WARNING")
+        return None
 
 
 def _synth(text, voice, path):
@@ -668,6 +720,7 @@ def health():
         "status": "ok", "port": PORT, "model": LLM_MODEL,
         "llm_key_set": bool(LLM_KEY),
         "start_wav": os.path.exists(START_WAV), "end_wav": os.path.exists(END_WAV),
+        "gap_s": GAP_SEC, "gap_wav": _gap_wav(),
         "cache_ttl_s": CACHE_TTL_SEC,
     }
 
@@ -677,8 +730,11 @@ async def stream_bulletin(req: Request):
     """Same work as /text, handed over sentence by sentence as SSE instead of in one piece.
 
     Event shapes, all one JSON object per `data:` line:
-        {"meta": {"start_wav": ..., "end_wav": ...}}   first, so the caller can queue the sting
+        {"meta": {"start_wav": ..., "end_wav": ..., "gap_wav": ...}}
+                                                       first, so the caller can queue the sting
         {"text": "<one sentence>"}                     repeated
+        {"gap": true}                                  end of a story: play gap_wav (a short
+                                                       silence) before the next sentence
         {"done": true, "sentences": n, "chars": n}     last
         {"error": "..."}                               instead of done, at any point
 
@@ -707,10 +763,13 @@ async def stream_bulletin(req: Request):
             log("mọi nguồn đều hỏng/rỗng", "ERROR")
             yield event({"error": "all sources failed"})
             return
-        yield event({"meta": {"start_wav": START_WAV, "end_wav": END_WAV}})
+        yield event({"meta": {"start_wav": START_WAV, "end_wav": END_WAV, "gap_wav": _gap_wav()}})
         n = chars = 0
         try:
-            for sentence in rewrite_stream(blocks):
+            for kind, sentence in rewrite_stream(blocks):
+                if kind == "gap":
+                    yield event({"gap": True})
+                    continue
                 n, chars = n + 1, chars + len(sentence)
                 yield event({"text": sentence})
         except Exception as e:

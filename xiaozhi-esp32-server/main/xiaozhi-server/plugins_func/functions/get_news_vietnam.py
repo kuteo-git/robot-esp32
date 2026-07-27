@@ -22,7 +22,7 @@ _DEFAULT_FEEDS = {
         "https://genk.vn/rss/tin-ict.rss",        # GenK ICT (VN)
         "https://www.theverge.com/rss/index.xml",       # The Verge (EN, Atom)
     ],
-    "society": ["https://vnexpress.net/rss/thoi-su.rss"],
+    "society": ["https://thanhnien.vn/rss/thoi-su.rss"],
     "world": ["https://vnexpress.net/rss/the-gioi.rss"],
     "latest": ["https://vnexpress.net/rss/tin-moi-nhat.rss"],
 }
@@ -95,7 +95,7 @@ def _fetch_feed(url, limit=5):
                     "link": link,
                     "description": _clean(desc)[:300],
                 })
-        else:  # RSS 2.0 (VnExpress)
+        else:  # RSS 2.0 (Thanh Niên, VnExpress)
             for item in root.findall(".//item")[:limit]:
                 t = item.find("title")
                 l = item.find("link")

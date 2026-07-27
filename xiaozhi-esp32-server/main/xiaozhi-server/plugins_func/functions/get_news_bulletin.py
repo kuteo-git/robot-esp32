@@ -99,6 +99,7 @@ def _stream_bulletin(conn, categories, voice):
     started = False   # turn opened (FIRST sent) -> it MUST be closed with LAST
     spoken = 0
     end_wav = None
+    gap_wav = None
     try:
         r = requests.post(
             f"{NEWS_SERVICE}/stream",
@@ -124,6 +125,7 @@ def _stream_bulletin(conn, categories, voice):
                 continue
             if (meta := evt.get("meta")) is not None:
                 end_wav = meta.get("end_wav")
+                gap_wav = meta.get("gap_wav")
                 put(SentenceType.FIRST, ContentType.ACTION, voice=voice or None)
                 started = True
                 start_wav = meta.get("start_wav")
@@ -136,6 +138,13 @@ def _stream_bulletin(conn, categories, voice):
                 conn.tts.store_tts_text(sentence_id, text)
                 put(SentenceType.MIDDLE, ContentType.TEXT, content_detail=text)
                 spoken += 1
+            elif evt.get("gap"):
+                # End of a story. Sentences are synthesized one per TTS call and played back to
+                # back, so without this the bulletin runs together; a short silence FILE is the only
+                # pause the queue can express (punctuation does not lengthen the TTS output).
+                # Skipped before the first sentence -- a gap there would just delay the opening.
+                if started and spoken and gap_wav and os.path.exists(gap_wav):
+                    put(SentenceType.MIDDLE, ContentType.FILE, content_file=gap_wav)
             elif evt.get("error"):
                 logger.bind(tag=TAG).error(f"news bulletin: service lỗi: {evt['error']}")
                 break
