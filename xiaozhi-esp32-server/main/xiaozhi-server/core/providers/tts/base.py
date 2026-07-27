@@ -251,6 +251,12 @@ class TTSProviderBase(ABC):
         gain_db = float(raw_gain) if apply_gain else 0.0
         # Only a single reused clip is worth caching; see _get_thinking_loop_pcm.
         cacheable = sound_file == configured or not apply_gain
+        # Stop whatever is already looping before replacing the handle to it. _thinking_stop_event
+        # holds ONE event, so starting a second loop without this orphans the first: it keeps
+        # pushing frames with nothing able to stop it, and stop_thinking_loop() can only ever reach
+        # the newest. Seen live -- three overlapping news triggers left three beds playing at once
+        # with no "stopped" between them, and they ran until the connection dropped.
+        self.stop_thinking_loop()
         stop_event = threading.Event()
         self._thinking_stop_event = stop_event
         threading.Thread(
