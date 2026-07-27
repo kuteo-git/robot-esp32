@@ -64,8 +64,8 @@ LLM_BASE = os.environ.get("NEWS_LLM_BASE_URL", "http://127.0.0.1:20128/api/v1")
 LLM_MODEL = os.environ.get("NEWS_LLM_MODEL", "r1-combo")
 LLM_KEY = os.environ.get("NEWS_LLM_API_KEY", "")  # set in the launchd plist, never committed
 
-# How many stories each category contributes. Tech carries three sources so it can afford more
-# without repeating itself; the single-source categories stay tighter. Per-category override:
+# How many stories each category contributes. Tech merges two sources so it can afford more without
+# repeating itself; the single-source categories stay tighter. Per-category override:
 # NEWS_ITEMS_TECH / NEWS_ITEMS_SOCIETY / NEWS_ITEMS_WORLD; NEWS_ITEMS_PER_CATEGORY is the fallback
 # for anything not named.
 ITEMS_PER_CATEGORY = int(os.environ.get("NEWS_ITEMS_PER_CATEGORY", "3"))
@@ -101,7 +101,7 @@ _ATOM = "{http://www.w3.org/2005/Atom}"
 
 FEEDS = {
     "tech": [
-        "https://vnexpress.net/rss/so-hoa.rss",
+        "https://genk.vn/rss/tin-ict.rss",
         "https://www.theverge.com/rss/index.xml",
     ],
     "society": ["https://vnexpress.net/rss/thoi-su.rss"],

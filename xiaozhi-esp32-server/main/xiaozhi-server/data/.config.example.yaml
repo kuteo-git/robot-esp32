@@ -183,7 +183,7 @@ plugins:
   get_news_vietnam:
     news_count: 5
     tech_feeds:
-      - "https://vnexpress.net/rss/so-hoa.rss"
+      - "https://genk.vn/rss/tin-ict.rss"
       - "https://www.theverge.com/rss/index.xml"
     society_feeds:
       - "https://vnexpress.net/rss/thoi-su.rss"

@@ -19,7 +19,7 @@ _ATOM = "{http://www.w3.org/2005/Atom}"
 # plugins.get_news_vietnam.<key>_feeds (e.g. tech_feeds).
 _DEFAULT_FEEDS = {
     "tech": [
-        "https://vnexpress.net/rss/so-hoa.rss",        # VnExpress Digital (VN)
+        "https://genk.vn/rss/tin-ict.rss",        # GenK ICT (VN)
         "https://www.theverge.com/rss/index.xml",       # The Verge (EN, Atom)
     ],
     "society": ["https://vnexpress.net/rss/thoi-su.rss"],
