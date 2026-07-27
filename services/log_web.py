@@ -126,7 +126,8 @@ PAGE = """<!doctype html><html lang="vi"><head><meta charset="utf-8">
   }
 }
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);touch-action:manipulation;
   font:13px/1.5 "Geist Mono",ui-monospace,Menlo,Consolas,monospace}
 header{position:sticky;top:0;z-index:2;display:flex;gap:8px;flex-wrap:wrap;align-items:center;
   padding:10px 14px;background:var(--surface);border-bottom:1px solid var(--border);
@@ -137,9 +138,11 @@ header{position:sticky;top:0;z-index:2;display:flex;gap:8px;flex-wrap:wrap;align
 select,input,button{background:var(--surface-2);color:var(--text);border:1px solid var(--border);
   border-radius:var(--radius-control);padding:6px 10px;font:12px "Geist Mono",monospace;
   transition:background .15s var(--ease),border-color .15s var(--ease)}
-button{cursor:pointer;border-radius:var(--radius-pill)}
+button{cursor:pointer;border-radius:var(--radius-pill);display:inline-flex;align-items:center;gap:6px}
 button:hover{background:var(--elev)}
 button.on{background:linear-gradient(120deg,var(--accent),var(--accent-2));border-color:transparent;color:#fff}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.icon{width:14px;height:14px;flex:none;stroke:currentColor;fill:none;stroke-width:1.75}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--red);display:inline-block;flex:none;
   box-shadow:0 0 0 3px color-mix(in srgb, var(--red) 25%, transparent)}
 .dot.live{background:var(--teal);box-shadow:0 0 0 3px color-mix(in srgb, var(--teal) 25%, transparent)}
@@ -148,6 +151,15 @@ button.on{background:linear-gradient(120deg,var(--accent),var(--accent-2));borde
 #log .hi{background:color-mix(in srgb, var(--amber) 20%, transparent)}
 .muted{color:var(--muted)}
 .tsel{appearance:none}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+  clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.fltwrap{position:relative;display:inline-flex;align-items:center}
+.fltwrap input{padding-right:26px}
+.fltclear{position:absolute;right:2px;width:20px;height:20px;padding:0;border:none;background:none;
+  display:none;align-items:center;justify-content:center;color:var(--muted);border-radius:50%}
+.fltclear:hover{background:var(--elev);color:var(--text)}
+.fltwrap.has-value .fltclear{display:inline-flex}
+@media (prefers-reduced-motion:reduce){*{transition-duration:0.01ms!important}}
 /* logcat-style level colors */
 .lvl-FATAL{color:#fff;background:var(--red);padding:0 4px;border-radius:3px}
 .lvl-ERROR{color:var(--red)}
@@ -158,24 +170,40 @@ button.on{background:linear-gradient(120deg,var(--accent),var(--accent-2));borde
 .tok-date{color:var(--faint)}
 .tok-ver{color:var(--violet)}
 @media (max-width:640px){
-  header{padding:8px 10px;gap:6px}
+  header{padding:8px 10px;gap:8px}
   .brand{width:100%;order:-2}
   .dot{order:-1}
-  select,#flt{flex:1 1 auto;min-width:0}
-  button{padding:7px 10px}
+  select,.fltwrap{flex:1 1 auto;min-width:0}
+  select,#flt,button{min-height:44px}
+  button{padding:10px 14px}
   #cnt{width:100%;order:9;text-align:right}
   #log{padding:8px 10px;font-size:12px}
 }
 </style></head><body>
 <header>
   <span class="brand"><span class="glyph"></span>Robot log</span>
-  <span class="dot" id="dot"></span>
+  <span class="dot" id="dot" role="status" aria-label="đang mất kết nối" title="đang mất kết nối"></span>
+  <label for="src" class="sr-only">Chọn nguồn log</label>
   <select id="src" class="tsel"></select>
-  <input id="flt" placeholder="lọc (chữ con)..." size="18">
-  <button id="pause">Tạm dừng</button>
-  <button id="wrap" class="on">Wrap</button>
-  <button id="clear">Xoá màn</button>
-  <button id="theme">☀/☾</button>
+  <span class="fltwrap">
+    <label for="flt" class="sr-only">Lọc log</label>
+    <input id="flt" placeholder="lọc (chữ con)..." size="18" autocomplete="off">
+    <button class="fltclear" id="fltClear" type="button" aria-label="Xoá bộ lọc" title="Xoá bộ lọc">
+      <svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </span>
+  <button id="pause" aria-pressed="false">
+    <svg class="icon" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+    Tạm dừng
+  </button>
+  <button id="wrap" class="on" aria-pressed="true">Wrap</button>
+  <button id="clear">
+    <svg class="icon" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+    Xoá màn
+  </button>
+  <button id="theme" aria-label="Đổi giao diện sáng/tối" title="Đổi giao diện sáng/tối">
+    <svg class="icon" id="themeIcon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+  </button>
   <span class="muted" id="cnt">0 dòng</span>
 </header>
 <div id="log"></div>
@@ -184,11 +212,20 @@ button.on{background:linear-gradient(120deg,var(--accent),var(--accent-2));borde
   var saved=localStorage.getItem('relay-theme');
   if(saved)document.documentElement.setAttribute('data-theme',saved);
 })();
+var MOON_PATH='M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z';
+var SUN_PATH='M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4';
+function syncThemeIcon(){
+  var isLight=document.documentElement.getAttribute('data-theme')==='light';
+  var el=document.getElementById('themeIcon');
+  el.innerHTML=isLight?'<circle cx="12" cy="12" r="4"/><path d="'+SUN_PATH+'"/>':'<path d="'+MOON_PATH+'"/>';
+}
+syncThemeIcon();
 document.getElementById('theme').onclick=function(){
   var cur=document.documentElement.getAttribute('data-theme');
   var next=cur==='light'?'dark':'light';
   document.documentElement.setAttribute('data-theme',next);
   localStorage.setItem('relay-theme',next);
+  syncThemeIcon();
 };
 // logcat-style classification: date/time, version tokens, level keywords
 var DATE_RE=/\\b(\\d{4}-\\d{2}-\\d{2}[ T]\\d{2}:\\d{2}:\\d{2}(?:[.,]\\d+)?|\\d{2}:\\d{2}:\\d{2}(?:[.,]\\d+)?)\\b/;
@@ -223,15 +260,18 @@ const srcSel=document.getElementById('src'), log=document.getElementById('log'),
 const SOURCES=__SOURCES__;
 SOURCES.forEach(n=>{const o=document.createElement('option');o.value=n;o.textContent=n;srcSel.appendChild(o)});
 const wrapBtn=document.getElementById('wrap');
+const fltWrap=document.querySelector('.fltwrap'), fltClear=document.getElementById('fltClear');
 const ST_KEY='logweb-state';
 function loadState(){try{return JSON.parse(localStorage.getItem(ST_KEY))||{};}catch(e){return {};}}
 function saveState(patch){const s=Object.assign(loadState(),patch);localStorage.setItem(ST_KEY,JSON.stringify(s));}
+function syncFltClear(){fltWrap.classList.toggle('has-value',!!flt.value);}
 const initial=loadState();
 if(initial.src && SOURCES.includes(initial.src))srcSel.value=initial.src;
 if(typeof initial.flt==='string')flt.value=initial.flt;
-if(initial.wrap===false){wrapBtn.classList.remove('on');log.style.whiteSpace='pre';}
+syncFltClear();
+if(initial.wrap===false){wrapBtn.classList.remove('on');wrapBtn.setAttribute('aria-pressed','false');log.style.whiteSpace='pre';}
 let es=null,paused=!!initial.paused,n=0;
-if(paused){pauseBtn.classList.add('on');pauseBtn.textContent='Tiếp tục';}
+if(paused){pauseBtn.classList.add('on');pauseBtn.setAttribute('aria-pressed','true');pauseBtn.lastChild.textContent=' Tiếp tục';}
 function atBottom(){return window.innerHeight+window.scrollY>=document.body.scrollHeight-60}
 function applyFilterToLine(div,f){
   const show=!f || div.dataset.raw.toLowerCase().includes(f);
@@ -257,15 +297,27 @@ function add(line){
 function connect(){
   if(es)es.close(); log.innerHTML=''; n=0;
   es=new EventSource('/stream?name='+encodeURIComponent(srcSel.value));
-  es.onopen=()=>dot.classList.add('live');
-  es.onerror=()=>dot.classList.remove('live');
+  es.onopen=()=>{dot.classList.add('live');dot.setAttribute('aria-label','đang kết nối');dot.title='đang kết nối';};
+  es.onerror=()=>{dot.classList.remove('live');dot.setAttribute('aria-label','đang mất kết nối');dot.title='đang mất kết nối';};
   es.onmessage=e=>{if(!paused)add(e.data)};
 }
 srcSel.onchange=()=>{saveState({src:srcSel.value});connect();};
-flt.oninput=()=>{saveState({flt:flt.value});reapplyFilter();};
-pauseBtn.onclick=()=>{paused=!paused;pauseBtn.classList.toggle('on',paused);pauseBtn.textContent=paused?'Tiếp tục':'Tạm dừng';saveState({paused});};
-wrapBtn.onclick=function(){this.classList.toggle('on');
-  log.style.whiteSpace=this.classList.contains('on')?'pre-wrap':'pre';saveState({wrap:this.classList.contains('on')});};
+flt.oninput=()=>{saveState({flt:flt.value});syncFltClear();reapplyFilter();};
+fltClear.onclick=()=>{flt.value='';flt.focus();saveState({flt:''});syncFltClear();reapplyFilter();};
+pauseBtn.onclick=()=>{
+  paused=!paused;
+  pauseBtn.classList.toggle('on',paused);
+  pauseBtn.setAttribute('aria-pressed',String(paused));
+  pauseBtn.lastChild.textContent=paused?' Tiếp tục':' Tạm dừng';
+  saveState({paused});
+};
+wrapBtn.onclick=function(){
+  this.classList.toggle('on');
+  const on=this.classList.contains('on');
+  this.setAttribute('aria-pressed',String(on));
+  log.style.whiteSpace=on?'pre-wrap':'pre';
+  saveState({wrap:on});
+};
 document.getElementById('clear').onclick=()=>{log.innerHTML='';n=0;cnt.textContent='0 dòng'};
 connect();
 </script></body></html>"""
