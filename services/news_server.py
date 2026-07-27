@@ -1,24 +1,35 @@
 """
-news_server — produces a finished, edited news BULLETIN as a single audio file.
+news_server — writes an edited news BULLETIN and hands it over sentence by sentence.
 
 STATELESS on purpose: the caller passes the checklist it wants, this service holds no schedule and
 no per-device config. That keeps it curl-testable on its own, which the in-server version was not.
 
-  POST /generate  {"categories":[{"key":"society","enabled":true}, ...], "voice":"Thái Sơn"}
-                  -> {"ok":true,"audio_path":"...","duration_s":63.2,"cached":false,"text":"..."}
+  POST /stream    {"categories":[{"key":"society","enabled":true}, ...]}
+                  -> SSE: {"meta":{...}} then {"text":"<sentence>"} xN then {"done":true}
+                  THE ONE THE ROBOT USES.
+  POST /text      same input -> {"ok":true,"text":"<whole bulletin>"} in one piece. Kept because a
+                  single JSON blob is far easier to eyeball with curl than a stream.
+  POST /generate  same input + {"voice":"Thái Sơn"} -> a finished WAV, stings included.
+                  Nothing calls it now; kept for a caller that wants a file rather than speech.
   GET  /health
 
 Pipeline:
-  1. fetch every enabled category IN PARALLEL (a failed/empty source is skipped, never fatal)
+  1. fetch every enabled category IN PARALLEL (a failed/empty source is skipped, never fatal), and
+     pull the article body behind each story that will actually air
   2. concatenate the raw text in the CALLER'S order -- the checklist order is the reading order,
      decided by code, never by the LLM
   3. one LLM pass (OmniRoute, r1-combo) rewrites it into one flowing, serious bulletin, opening
      with the right time of day (sáng/trưa/chiều/tối) taken from the clock here
-  4. VieNeu (:8002) synthesizes it in sentence-sized chunks
-  5. ffmpeg concatenates START_WAV + speech + END_WAV into ONE file (uniform sample rate)
+  4. /stream yields each sentence as the model finishes it; /generate instead synthesizes through
+     VieNeu (:8002) and has ffmpeg concatenate START_WAV + speech + END_WAV into one file
 
-Result is cached for CACHE_TTL_SEC keyed by (checklist, voice) so a repeat ask -- or a double tap
-on "Phát thử" -- replays instantly instead of paying the ~20-45s generation cost again.
+Streaming is the point of step 4. The first sentence is ready ~2s in while the last of ~37 arrives
+near the minute mark, so returning only the finished bulletin spent ~50s before a word was spoken;
+the robot now starts reading almost immediately. /generate still pays the full cost, which is
+inherent to producing a file.
+
+Only /generate caches (CACHE_TTL_SEC, keyed by checklist+voice) -- there is nothing to cache for a
+stream, and a bulletin is meant to be current anyway.
 
 Public on 0.0.0.0:8014. Log: stdout (services/log_web.py, port 8009).
 """
@@ -36,7 +47,7 @@ from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 import uvicorn
 
 PORT = int(os.environ.get("NEWS_PORT", "8014"))
@@ -426,6 +437,86 @@ def _extract_reply(body):
     return "".join(out)
 
 
+def _llm_payload(blocks):
+    raw = "\n\n".join(f"[{label}]\n{text}" for label, text in blocks)
+    now = datetime.now()
+    return raw, {
+        "model": LLM_MODEL,
+        "messages": [
+            {"role": "system", "content": _prompt(_period_vi(now), f"{now.day} tháng {now.month} năm {now.year}")},
+            {"role": "user", "content": raw},
+        ],
+        "temperature": 0.6,
+        "stream": True,
+    }
+
+
+# A sentence ends at . ! ? followed by whitespace -- but not mid-number ("6.29 km/h", "22.9 triệu"),
+# so the character after the stop must not be a digit.
+_SENT_END = re.compile(r"(?<=[.!?])(?!\d)\s+")
+
+
+def rewrite_stream(blocks):
+    """Yields COMPLETE SENTENCES as the model produces them, instead of the finished bulletin.
+
+    The whole point of the bulletin taking 45s is that almost none of that wait is necessary:
+    measured against this model, the first token lands at 1.3s and the first complete sentence at
+    1.8s, while the last of ~38 sentences arrives at 46.8s. Reading only starts when there is a
+    sentence to read, so handing them over as they finish takes time-to-first-audio from ~48s to
+    ~3-5s. rewrite() below still exists for /generate, which produces a finished file and therefore
+    has nothing to gain.
+
+    Sentence-at-a-time also makes an interrupt land immediately: queued as one block, the abandoned
+    bulletin kept synthesizing for ~12s after the user cut in, because clear_queues cannot reach
+    text the TTS worker has already taken.
+    """
+    raw, payload = _llm_payload(blocks)
+    t0 = time.perf_counter()
+    log(f"LLM viết lại - stream ({len(raw)} ký tự thô, model {LLM_MODEL})...")
+    r = requests.post(
+        f"{LLM_BASE}/chat/completions",
+        json=payload,
+        headers={"Authorization": f"Bearer {LLM_KEY}", "Content-Type": "application/json"},
+        timeout=180,
+        stream=True,
+    )
+    r.raise_for_status()
+    buf, count, chars, first = "", 0, 0, None
+    # decode_unicode=False + explicit UTF-8: the stream is text/event-stream with no charset, and
+    # letting requests guess gives ISO-8859-1, which mangles every Vietnamese character.
+    for line in r.iter_lines(decode_unicode=False):
+        if not line:
+            continue
+        s = line.decode("utf-8", errors="replace").strip()
+        if not s.startswith("data:"):
+            continue
+        chunk = s[5:].strip()
+        if not chunk or chunk == "[DONE]":
+            continue
+        try:
+            delta = json.loads(chunk)["choices"][0].get("delta", {})
+        except Exception:
+            continue
+        if not (c := delta.get("content")):
+            continue
+        buf += c
+        while (m := _SENT_END.search(buf)):
+            sentence, buf = buf[: m.start() + 1].strip(), buf[m.end():]
+            if not (sentence := _strip_markdown(sentence)):
+                continue
+            count, chars = count + 1, chars + len(sentence)
+            if first is None:
+                first = time.perf_counter() - t0
+                log(f"câu đầu tiên sau {first:.1f}s: {sentence[:60]}")
+            yield sentence
+    if (tail := _strip_markdown(buf.strip())):
+        count, chars = count + 1, chars + len(tail)
+        yield tail
+    if not count:
+        raise RuntimeError("LLM trả về rỗng")
+    log(f"LLM xong - stream ({count} câu, {chars} ký tự, {time.perf_counter()-t0:.1f}s)")
+
+
 def rewrite(blocks):
     raw = "\n\n".join(f"[{label}]\n{text}" for label, text in blocks)
     now = datetime.now()
@@ -580,6 +671,65 @@ def health():
         "start_wav": os.path.exists(START_WAV), "end_wav": os.path.exists(END_WAV),
         "cache_ttl_s": CACHE_TTL_SEC,
     }
+
+
+@app.post("/stream")
+async def stream_bulletin(req: Request):
+    """Same work as /text, handed over sentence by sentence as SSE instead of in one piece.
+
+    Event shapes, all one JSON object per `data:` line:
+        {"meta": {"start_wav": ..., "end_wav": ...}}   first, so the caller can queue the sting
+        {"text": "<one sentence>"}                     repeated
+        {"done": true, "sentences": n, "chars": n}     last
+        {"error": "..."}                               instead of done, at any point
+
+    Meta goes first rather than with the sentences because the caller must open its turn and queue
+    the opening sting before it has anything to read.
+    """
+    body = await req.json()
+    cats = body.get("categories") or []
+    order = [c["key"] for c in cats if isinstance(c, dict) and c.get("enabled") and c.get("key")]
+    if not order:
+        return JSONResponse({"ok": False, "error": "no enabled categories"}, status_code=400)
+
+    def event(obj):
+        return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
+
+    def produce():
+        t0 = time.perf_counter()
+        log(f"soạn bản tin (stream): mục={order}")
+        try:
+            blocks = fetch_blocks(order)
+        except Exception as e:
+            log(f"gom tin lỗi: {e}", "ERROR")
+            yield event({"error": f"fetch failed: {e}"})
+            return
+        if not blocks:
+            log("mọi nguồn đều hỏng/rỗng", "ERROR")
+            yield event({"error": "all sources failed"})
+            return
+        yield event({"meta": {"start_wav": START_WAV, "end_wav": END_WAV}})
+        n = chars = 0
+        try:
+            for sentence in rewrite_stream(blocks):
+                n, chars = n + 1, chars + len(sentence)
+                yield event({"text": sentence})
+        except Exception as e:
+            # Mid-stream failure: report it rather than ending with done, so a caller that has
+            # already spoken part of the bulletin can close its turn instead of waiting forever.
+            log(f"LLM lỗi giữa chừng sau {n} câu: {e}", "ERROR")
+            yield event({"error": str(e), "sentences": n})
+            return
+        log(f"XONG stream: {n} câu, {chars} ký tự (tổng {time.perf_counter()-t0:.1f}s)")
+        yield event({"done": True, "sentences": n, "chars": chars})
+
+    return StreamingResponse(
+        produce(),
+        media_type="text/event-stream",
+        # Without this an intermediary may buffer the whole response, which would give back exactly
+        # the latency this endpoint exists to remove.
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/text")

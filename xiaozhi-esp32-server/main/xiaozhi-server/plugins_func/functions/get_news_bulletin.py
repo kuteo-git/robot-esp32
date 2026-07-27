@@ -1,19 +1,22 @@
 """Full, produced news BULLETIN -- the edited one with the start/end stings, as opposed to
-get_news_vietnam's quick "read me a few headlines" answer. Both tools stay: this one is worth a
-20-45s wait, that one answers immediately, and their descriptions are written to be disjoint.
+get_news_vietnam's quick "read me a few headlines" answer. Both tools stay: this one is a produced
+bulletin running several minutes, that one answers in a sentence, and their descriptions are
+written to be disjoint.
 
-All the work happens in the standalone news service (services/news_server.py, :8014): it fetches
-the enabled categories in parallel, has an LLM edit them into one flowing bulletin, synthesizes it
-and returns ONE audio file. Here we only look up which categories this device wants, ask for the
-file, and queue it -- exactly the way play_youtube.py queues a downloaded mp3.
+The writing happens in the standalone news service (services/news_server.py, :8014): it fetches the
+enabled categories in parallel and has an LLM edit them into one flowing bulletin. Here we look up
+which categories this device wants and read the result out as it is written.
 
-Queuing a file rather than streaming TTS text is deliberate: the earlier streaming version had to
-guess when playback had finished in order to close the connection, and got it wrong (it cut the
-bulletin off after ~2s). A file plays through the same path music already uses, on an ordinary
-conversation connection that closes on its own.
+That last part is the whole design. The service streams SENTENCES over SSE (POST /stream) and each
+one is queued for speech the moment it lands, so the speaker starts a few seconds in rather than
+waiting out the model -- measured, the first sentence is ready around 2s while the last of ~37
+arrives near the minute mark. Speaking sentence by sentence also means an interrupt takes effect
+at once: queued as a single block, an abandoned bulletin went on synthesizing for ~12s after the
+user cut in, because clearing the queue cannot reach text the TTS worker already holds.
 """
 
 import os
+import json
 import uuid
 import asyncio
 import requests
@@ -46,40 +49,13 @@ get_news_bulletin_desc = {
             "trong nước, thế giới, công nghệ, thời tiết, cúp điện — theo checklist người dùng đã "
             "cấu hình). Gọi khi người dùng nói 'bản tin', 'đọc bản tin', 'bản tin sáng/trưa/chiều/tối', "
             "'tin tức buổi sáng', 'tin tức buổi trưa', 'nghe bản tin'. "
-            "Mất khoảng 20-45 giây để soạn nên KHÔNG dùng cho câu hỏi tin tức nhanh — "
+            "Bản tin đọc liên tục vài phút nên KHÔNG dùng cho câu hỏi tin tức nhanh — "
             "'đọc tin tức', 'tin công nghệ', 'có tin gì mới', 'kể chi tiết tin đó' thì dùng "
             "get_news_vietnam thay vì tool này."
         ),
         "parameters": {"type": "object", "properties": {}},
     },
 }
-
-
-def _queue_bulletin(conn, text, start_wav, end_wav, voice):
-    """One turn: FIRST -> start sting -> the bulletin as TEXT -> end sting -> LAST.
-
-    The text is queued rather than pre-rendered audio, so the TTS pipeline synthesizes it segment
-    by segment and the speaker starts on the first sentence instead of waiting for the whole
-    bulletin to render -- which was over a third of the total wait.
-
-    The voice rides on FIRST (see TTSMessageDTO.voice): it applies for this turn only, so the
-    bulletin reads in its own voice without disturbing the assistant's normal one.
-    """
-    sentence_id = uuid.uuid4().hex
-    conn.sentence_id = sentence_id
-    q = conn.tts.tts_text_queue
-
-    def put(stype, ctype, **kw):
-        q.put(TTSMessageDTO(sentence_id=sentence_id, sentence_type=stype, content_type=ctype, **kw))
-
-    put(SentenceType.FIRST, ContentType.ACTION, voice=voice or None)
-    if start_wav and os.path.exists(start_wav):
-        put(SentenceType.MIDDLE, ContentType.FILE, content_file=start_wav)
-    conn.tts.store_tts_text(sentence_id, text)
-    put(SentenceType.MIDDLE, ContentType.TEXT, content_detail=text)
-    if end_wav and os.path.exists(end_wav):
-        put(SentenceType.MIDDLE, ContentType.FILE, content_file=end_wav)
-    put(SentenceType.LAST, ContentType.ACTION)
 
 
 def _say(conn, text):
@@ -94,14 +70,85 @@ def _say(conn, text):
     )
 
 
-def _generate(categories):
-    r = requests.post(
-        f"{NEWS_SERVICE}/text",
-        json={"categories": categories},
-        timeout=GENERATE_TIMEOUT,
-    )
-    r.raise_for_status()
-    return r.json()
+def _stream_bulletin(conn, categories, voice):
+    """Reads the bulletin ALOUD AS THE MODEL WRITES IT, one sentence at a time.
+
+    The wait was almost entirely unnecessary. Measured against this model, the first complete
+    sentence lands a couple of seconds in while the last of ~37 arrives near the minute mark -- so
+    waiting for the finished text before speaking a word spent ~50s to gain nothing. The service
+    hands sentences over as they finish (POST /stream, SSE) and each one is queued the moment it
+    arrives, which is the same thing the server already does with ordinary replies.
+
+    One turn, exactly as before: FIRST -> start sting -> sentence -> sentence -> ... -> end sting ->
+    LAST. The turn is opened on the meta event rather than the first sentence, so the sting starts
+    playing while the model is still writing.
+
+    Runs on a worker thread (blocking HTTP), pushing into the thread-safe tts_text_queue. Returns
+    the number of sentences spoken so the caller can tell "failed before saying anything", which
+    deserves a spoken apology, from "failed midway", which does not -- the listener already heard
+    most of a bulletin and only needs the turn closed.
+    """
+    sentence_id = uuid.uuid4().hex
+    conn.sentence_id = sentence_id
+    q = conn.tts.tts_text_queue
+
+    def put(stype, ctype, **kw):
+        q.put(TTSMessageDTO(sentence_id=sentence_id, sentence_type=stype, content_type=ctype, **kw))
+
+    started = False   # turn opened (FIRST sent) -> it MUST be closed with LAST
+    spoken = 0
+    end_wav = None
+    try:
+        r = requests.post(
+            f"{NEWS_SERVICE}/stream",
+            json={"categories": categories},
+            timeout=GENERATE_TIMEOUT,
+            stream=True,
+        )
+        r.raise_for_status()
+        for line in r.iter_lines(decode_unicode=False):
+            # The user cut in: stop feeding the queue. Whatever is already in it gets cleared by
+            # handleAbortMessage, and the turn is closed in the finally below.
+            if conn.client_abort:
+                logger.bind(tag=TAG).info("news bulletin: bị ngắt giữa chừng -> dừng đọc")
+                break
+            if not line:
+                continue
+            s = line.decode("utf-8", errors="replace").strip()
+            if not s.startswith("data:"):
+                continue
+            try:
+                evt = json.loads(s[5:].strip())
+            except Exception:
+                continue
+            if (meta := evt.get("meta")) is not None:
+                end_wav = meta.get("end_wav")
+                put(SentenceType.FIRST, ContentType.ACTION, voice=voice or None)
+                started = True
+                start_wav = meta.get("start_wav")
+                if start_wav and os.path.exists(start_wav):
+                    put(SentenceType.MIDDLE, ContentType.FILE, content_file=start_wav)
+            elif (text := evt.get("text")):
+                if not started:   # sentence before meta should not happen; open the turn anyway
+                    put(SentenceType.FIRST, ContentType.ACTION, voice=voice or None)
+                    started = True
+                conn.tts.store_tts_text(sentence_id, text)
+                put(SentenceType.MIDDLE, ContentType.TEXT, content_detail=text)
+                spoken += 1
+            elif evt.get("error"):
+                logger.bind(tag=TAG).error(f"news bulletin: service lỗi: {evt['error']}")
+                break
+            elif evt.get("done"):
+                logger.bind(tag=TAG).info(
+                    f"news bulletin: đọc xong {evt.get('sentences')} câu, {evt.get('chars')} ký tự"
+                )
+                break
+    finally:
+        if started:
+            if spoken and not conn.client_abort and end_wav and os.path.exists(end_wav):
+                put(SentenceType.MIDDLE, ContentType.FILE, content_file=end_wav)
+            put(SentenceType.LAST, ContentType.ACTION)
+    return spoken
 
 
 async def _run(conn, spoken_filler=True):
@@ -128,24 +175,21 @@ async def _run(conn, spoken_filler=True):
         if spoken_filler:
             await asyncio.sleep(FILLER_GRACE_S)
         try:
-            # "news" profile: the music-bed pool, not the ordinary loading clip. This wait is
-            # 45-60s, long enough that a short loop grates.
+            # "news" profile: the music-bed pool, not the ordinary loading clip. Short now that
+            # sentences stream (~5s to the first one), but it still covers the fetch + first
+            # sentence, and the pool costs nothing when the wait turns out to be brief.
             conn.tts.start_thinking_loop(profile="news")
         except Exception as e:
             logger.bind(tag=TAG).warning(f"news bulletin: không bật được tiếng chờ: {e}")
 
-        data = await asyncio.to_thread(_generate, categories)
-        if not data.get("ok") or not data.get("text"):
-            logger.bind(tag=TAG).error(f"news bulletin: service trả lỗi: {data}")
+        spoken = await asyncio.to_thread(_stream_bulletin, conn, categories, voice)
+        if not spoken:
+            # Nothing was ever said, so the listener is owed an explanation. A failure PARTWAY
+            # through is not this case: they heard most of a bulletin, and the turn was already
+            # closed cleanly, so apologising after the fact would be the odd thing to do.
+            logger.bind(tag=TAG).error("news bulletin: không đọc được câu nào")
             conn.tts.stop_thinking_loop()
             _say(conn, "Tao soạn bản tin không được, lát thử lại nghen.")
-            return
-
-        text = data["text"]
-        logger.bind(tag=TAG).info(
-            f"news bulletin: đọc {len(text)} ký tự, giọng={voice!r} (đọc trôi, không render sẵn)"
-        )
-        _queue_bulletin(conn, text, data.get("start_wav"), data.get("end_wav"), voice)
     except Exception as e:
         logger.bind(tag=TAG).error(f"news bulletin lỗi: {e}")
         try:
