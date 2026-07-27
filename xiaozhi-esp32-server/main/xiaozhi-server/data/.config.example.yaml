@@ -142,7 +142,7 @@ TTS:
     params:
       input: "{prompt_text}"
     output_dir: tmp/
-    tts_segment_max_chars: 80
+    tts_segment_max_chars: 180
 
 # ---------- Tính cách trợ lý (tiếng Việt) — tuỳ ý đổi persona ----------
 prompt: |
