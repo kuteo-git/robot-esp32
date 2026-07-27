@@ -47,7 +47,8 @@ get_news_bulletin_desc = {
         "description": (
             "Phát BẢN TIN đầy đủ đã biên tập (có nhạc hiệu đầu/cuối, đọc liền mạch nhiều mục: "
             "trong nước, thế giới, công nghệ, thời tiết, cúp điện — theo checklist người dùng đã "
-            "cấu hình). Gọi khi người dùng nói 'bản tin', 'đọc bản tin', 'bản tin sáng/trưa/chiều/tối', "
+            "cấu hình). Gọi khi người dùng nói 'điểm tin', 'điểm báo', 'bản tin', 'đọc bản tin', "
+            "'bản tin sáng/trưa/chiều/tối', "
             "'tin tức buổi sáng', 'tin tức buổi trưa', 'nghe bản tin'. "
             "Bản tin đọc liên tục vài phút nên KHÔNG dùng cho câu hỏi tin tức nhanh — "
             "'đọc tin tức', 'tin công nghệ', 'có tin gì mới', 'kể chi tiết tin đó' thì dùng "

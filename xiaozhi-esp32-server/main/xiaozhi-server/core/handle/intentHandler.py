@@ -76,7 +76,9 @@ NEWS_TOOL = "get_news_bulletin"
 # (the same reason cmd_exit entries are written unspaced in config).
 DIRECT_NEWS_CMDS = frozenset(
     c.replace(" ", "")
-    for c in ("đọc bản tin", "doc ban tin", "nghe bản tin", "nghe ban tin")
+    for c in ("đọc bản tin", "doc ban tin", "nghe bản tin", "nghe ban tin",
+              "điểm tin", "diem tin", "điểm báo", "diem bao",
+              "đọc điểm tin", "doc diem tin", "nghe điểm tin", "nghe diem tin")
 )
 
 

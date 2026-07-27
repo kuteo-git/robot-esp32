@@ -33,9 +33,11 @@ GET_NEWS_VIETNAM_FUNCTION_DESC = {
     "function": {
         "name": "get_news_vietnam",
         "description": (
-            "Gọi khi người dùng muốn nghe TIN TỨC / BẢN TIN "
+            "Gọi khi người dùng muốn nghe TIN TỨC nhanh, vài tiêu đề mới nhất. "
             "(vd 'đọc tin tức', 'tin công nghệ', 'thời sự hôm nay', 'có tin gì mới', "
-            "'kể chi tiết tin đó'). Nguồn: VnExpress, The Verge. "
+            "'kể chi tiết tin đó'). KHÔNG dùng khi người dùng nói 'bản tin', 'điểm tin', "
+            "'điểm báo' — đó là get_news_bulletin. "
+            "Nguồn: GenK, The Verge. "
             "Mặc định đọc vài tiêu đề mới nhất; đặt detail=true để đọc chi tiết 1 bài."
         ),
         "parameters": {
