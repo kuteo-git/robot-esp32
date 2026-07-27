@@ -91,7 +91,6 @@ _ATOM = "{http://www.w3.org/2005/Atom}"
 FEEDS = {
     "tech": [
         "https://vnexpress.net/rss/so-hoa.rss",
-        "https://tinhte.vn/rss",
         "https://www.theverge.com/rss/index.xml",
     ],
     "society": ["https://vnexpress.net/rss/thoi-su.rss"],
@@ -162,11 +161,11 @@ _JUNK = re.compile(
 def _article_text(url):
     """Pulls the article body, because the RSS summary alone is too thin to speak from.
 
-    VnExpress gives 100-180 characters per story and tinhte caps at ~200 — a couple of sentences of
-    real reporting needs more than that, and asked to expand on 120 characters the model pads or
-    invents. Deliberately generic (<p> tags over a threshold) rather than per-site selectors: five
-    feeds across three sites would otherwise mean five brittle rules. Returns "" on any failure,
-    and the caller keeps the RSS description.
+    RSS summaries run 100-200 characters (VnExpress gives 100-180) — a couple of sentences of real
+    reporting needs more than that, and asked to expand on 120 characters the model pads or invents.
+    Deliberately generic (<p> tags over a threshold) rather than per-site selectors, so adding a
+    feed does not mean adding a rule. Returns "" on any failure, and the caller keeps the RSS
+    description.
     """
     r = requests.get(url, timeout=ARTICLE_TIMEOUT, headers=_UA)
     r.raise_for_status()
@@ -186,8 +185,8 @@ def _add_bodies(items):
     """Fetches article bodies for the CHOSEN stories only, in parallel.
 
     Runs after the round-robin pick, so it costs one request per story that actually airs rather
-    than one per story fetched. Keeps whichever text is longer: tinhte renders its body outside
-    <p> tags and comes back shorter than its own RSS summary.
+    than one per story fetched. Keeps whichever text is longer, because a site that renders its
+    body outside <p> tags comes back shorter than its own RSS summary.
     """
     if not FULLTEXT:
         return

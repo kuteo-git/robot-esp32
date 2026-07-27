@@ -103,6 +103,11 @@ async def check_direct_news(conn: "ConnectionHandler", text):
         return False
     conn.logger.bind(tag=TAG).info(f"Direct news command: {text!r} (bỏ qua LLM)")
     await send_stt_message(conn, text)
+    # startToChat clears this before a normal turn, but it returns as soon as an intent reports
+    # itself handled, so this path never got that far. Asking for the bulletin while something else
+    # was playing therefore left the abort flag set, and the thinking loop and TTS both bail on it
+    # -- the bulletin would have been cut off the moment it started.
+    conn.client_abort = False
     conn.sentence_id = str(uuid.uuid4().hex)
     # SYSTEM_CTL takes conn (see ServerPluginExecutor.execute). It returns immediately after
     # scheduling the work, so there is nothing to await here. spoken_filler=False: nothing was

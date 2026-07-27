@@ -8,6 +8,7 @@ if TYPE_CHECKING:
 
 from core.utils.dialogue import Message
 from core.providers.asr.dto.dto import InterfaceType
+from core.handle.abortHandle import handleAbortMessage
 from core.handle.receiveAudioHandle import startToChat
 from core.handle.reportHandle import enqueue_asr_report
 from core.handle.sendAudioHandle import send_stt_message, send_tts_message, sendAudio
@@ -53,6 +54,14 @@ class ListenTextMessageHandler(TextMessageHandler):
             conn.reset_audio_states()
             if "text" in msg_json:
                 conn.last_activity_time = time.time() * 1000
+                # A typed command arrives complete, so it is always meant to take effect NOW --
+                # interrupt whatever is playing. startToChat's own abort cannot do it: this message
+                # carries mode "manual" (see above), and its guard skips manual mode, which is there
+                # for push-to-talk audio capture, not for text. Without this, anything said while a
+                # long answer was playing -- most visibly the news bulletin, which runs for minutes
+                # -- was simply ignored until it finished.
+                if conn.client_is_speaking:
+                    await handleAbortMessage(conn)
                 original_text = msg_json["text"]  # 保留原始文本
                 filtered_len, filtered_text = remove_punctuation_and_length(
                     original_text

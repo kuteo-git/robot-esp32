@@ -184,7 +184,6 @@ plugins:
     news_count: 5
     tech_feeds:
       - "https://vnexpress.net/rss/so-hoa.rss"
-      - "https://tinhte.vn/rss"
       - "https://www.theverge.com/rss/index.xml"
     society_feeds:
       - "https://vnexpress.net/rss/thoi-su.rss"

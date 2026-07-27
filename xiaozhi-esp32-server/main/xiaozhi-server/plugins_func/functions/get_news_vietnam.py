@@ -19,7 +19,6 @@ _ATOM = "{http://www.w3.org/2005/Atom}"
 _DEFAULT_FEEDS = {
     "tech": [
         "https://vnexpress.net/rss/so-hoa.rss",        # VnExpress Digital (VN)
-        "https://tinhte.vn/rss",                        # Tinh Te (VN)
         "https://www.theverge.com/rss/index.xml",       # The Verge (EN, Atom)
     ],
     "society": ["https://vnexpress.net/rss/thoi-su.rss"],
