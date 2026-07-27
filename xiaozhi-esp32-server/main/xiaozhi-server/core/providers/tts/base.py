@@ -218,16 +218,27 @@ class TTSProviderBase(ABC):
             state["idx"] = (state["idx"] + 1) % len(pool)
         return chosen, True
 
-    def start_thinking_loop(self):
+    def start_thinking_loop(self, profile=""):
         """Loop the configured 'thinking' placeholder sound on tts_audio_queue from turn
         start until stop_thinking_loop() is called (handle_opus calls it automatically once
         the real answer's first audio frame is ready) -- covers both LLM and TTS-synthesis
-        latency with no gap, since the loop runs on its own thread independent of both."""
+        latency with no gap, since the loop runs on its own thread independent of both.
+
+        profile names an ALTERNATIVE sound for a particular kind of wait, reading
+        thinking_loop_<profile>_sound_file / _gain_db instead of the plain keys. Only the news
+        bulletin uses one ("news"): its wait is 45-60s rather than the few seconds an ordinary
+        turn takes, which is long enough that a short loop grates and worth a pool of real music.
+        Every other turn keeps the original single loading clip -- a normal reply is over before a
+        music bed would establish itself. An unset profile key falls back to the plain one, so
+        removing the news config reverts that path to the ordinary sound rather than silence.
+        """
         if getattr(self.conn, "text_only", False):
             return
         if not self.conn.config.get("thinking_loop_sound", False):
             return
-        configured = self.conn.config.get("thinking_loop_sound_file")
+        cfg = self.conn.config
+        key = f"thinking_loop_{profile}_" if profile else "thinking_loop_"
+        configured = cfg.get(f"{key}sound_file") or cfg.get("thinking_loop_sound_file")
         if not configured:
             return
         picked = self._pick_thinking_sound(configured)
@@ -235,8 +246,9 @@ class TTSProviderBase(ABC):
             return
         sound_file, apply_gain = picked
         # Negative dB: this plays UNDER the wait, so it should register as ambience rather than
-        # compete with the spoken filler that starts alongside it.
-        gain_db = float(self.conn.config.get("thinking_loop_gain_db", -12)) if apply_gain else 0.0
+        # compete with whatever is being said around it.
+        raw_gain = cfg.get(f"{key}gain_db", cfg.get("thinking_loop_gain_db", 0))
+        gain_db = float(raw_gain) if apply_gain else 0.0
         # Only a single reused clip is worth caching; see _get_thinking_loop_pcm.
         cacheable = sound_file == configured or not apply_gain
         stop_event = threading.Event()

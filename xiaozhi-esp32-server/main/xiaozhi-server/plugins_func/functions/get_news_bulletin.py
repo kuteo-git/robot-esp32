@@ -128,7 +128,9 @@ async def _run(conn, spoken_filler=True):
         if spoken_filler:
             await asyncio.sleep(FILLER_GRACE_S)
         try:
-            conn.tts.start_thinking_loop()
+            # "news" profile: the music-bed pool, not the ordinary loading clip. This wait is
+            # 45-60s, long enough that a short loop grates.
+            conn.tts.start_thinking_loop(profile="news")
         except Exception as e:
             logger.bind(tag=TAG).warning(f"news bulletin: không bật được tiếng chờ: {e}")
 
