@@ -23,6 +23,14 @@ server:
   mqtt_signature_key: null
   udp_gateway: null
 
+# Override format log console: mặc định gốc dùng timestamp rút gọn "YYMMDD HH:mm:ss" + tag màu
+# loguru (dành cho terminal thật). Khi stdout bị redirect ra file (/tmp/robot-xiaozhi.log, tab
+# "xiaozhi (stdout)" trong log viewer chung, log_web.py :8009), tag màu vô dụng và timestamp rút
+# gọn không khớp format "YYYY-MM-DD HH:MM:SS - tag - LEVEL - msg" của các service khác -> viewer
+# không tô màu được. Đổi giống log_format_file cho nhất quán.
+log:
+  log_format: "{time:YYYY-MM-DD HH:mm:ss} - {extra[tag]} - {level} - {message}"
+
 # Dùng template prompt TIẾNG VIỆT (thay agent-base-prompt.txt mặc định bằng tiếng Trung)
 prompt_template: agent-base-prompt-vi.txt
 
