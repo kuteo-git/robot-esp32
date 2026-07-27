@@ -56,7 +56,7 @@ thinking_loop_sound_file: "config/assets/thinking/loading.mp3"
 thinking_loop_sound_fallback: "config/assets/thinking/loading.mp3"   # kho rỗng/thiếu -> dùng tiếng loading này (giữ nguyên mức, không áp gain)
 thinking_loop_gain_db: 0
 thinking_loop_news_sound_file: "config/assets/thinking/pool"
-thinking_loop_news_gain_db: -12   # chỉ là trim. Muốn TO hơn -> đổi LOUDNESS trong fetch_thinking_sounds.sh rồi build lại (quá +4dB là vỡ tiếng)
+thinking_loop_news_gain_db: -6   # chỉ là trim. Muốn TO hơn -> đổi LOUDNESS trong fetch_thinking_sounds.sh rồi build lại (quá +4dB là vỡ tiếng)
 # ---------- Giữ phiên trò chuyện lâu hơn ----------
 # Im KHÔNG nói gì quá ngần này (giây) thì server tự kết thúc phiên. Mặc định 120s.
 close_connection_no_voice_time: 60
