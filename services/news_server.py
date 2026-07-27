@@ -50,6 +50,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 import uvicorn
 
+from _logsetup import make_logger, install_request_logging
+
 PORT = int(os.environ.get("NEWS_PORT", "8014"))
 CACHE_DIR = os.environ.get("NEWS_CACHE_DIR", "/tmp/robot-news-cache")
 CACHE_TTL_SEC = int(os.environ.get("NEWS_CACHE_TTL_SEC", "1800"))  # 30 minutes
@@ -117,10 +119,7 @@ LABELS = {
 }
 
 app = FastAPI()
-
-
-def log(msg, level="INFO"):
-    print(f"{datetime.now():%Y-%m-%d %H:%M:%S} [news] {level}: {msg}", flush=True)
+log = install_request_logging(app, "news")
 
 
 # ── Fetching ──────────────────────────────────────────────────────────────────

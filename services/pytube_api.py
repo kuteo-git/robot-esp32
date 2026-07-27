@@ -54,6 +54,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+from _logsetup import install_flask_request_logging
+install_flask_request_logging(app, "pytube", log=lambda msg, level="INFO": getattr(logger, level.lower(), logger.info)(msg))
+
 # Lightweight cache (TTL) for search/related/playlist_url
 _API_CACHE = {}
 _API_CACHE_TTL = 600  # seconds

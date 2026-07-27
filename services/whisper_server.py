@@ -18,9 +18,9 @@ import uvicorn
 import time
 from datetime import datetime
 
+from _logsetup import make_logger, install_request_logging
 
-def log(msg):
-    print(f"{datetime.now():%Y-%m-%d %H:%M:%S} [whisper] {msg}", flush=True)
+log = make_logger("whisper")
 
 
 PORT = int(os.environ.get("WHISPER_PORT", "8001"))
@@ -290,6 +290,7 @@ def _has_speech(path) -> bool:
 
 
 app = FastAPI()
+install_request_logging(app, "whisper", log)
 
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])

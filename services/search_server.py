@@ -12,6 +12,8 @@ from fastapi import FastAPI
 from ddgs import DDGS
 import uvicorn
 
+from _logsetup import make_logger, install_request_logging
+
 CONTENT_LEN = int(os.environ.get("SEARCH_CONTENT_LEN", "1200"))  # truncate the content fetched per page
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
@@ -28,9 +30,7 @@ def _fetch_content(url: str) -> str:
 app = FastAPI()
 PORT = int(os.environ.get("SEARCH_PORT", "8012"))
 
-
-def log(m):
-    print(f"{datetime.now():%Y-%m-%d %H:%M:%S} [search] {m}", flush=True)
+log = install_request_logging(app, "search")
 
 
 @app.get("/health")

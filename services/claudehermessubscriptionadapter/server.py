@@ -44,7 +44,9 @@ logger.setLevel(logging.INFO)
 _handler = logging.handlers.TimedRotatingFileHandler(
     LOG_FILE, when="H", interval=12, backupCount=1, encoding="utf-8"
 )
-_handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+_handler.setFormatter(logging.Formatter(
+    "%(asctime)s - claude-adapter - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+))
 logger.addHandler(_handler)
 logger.propagate = False
 
@@ -83,8 +85,10 @@ async def _access_log(request: Request, call_next):
         return response
     summary = getattr(request.state, "response_summary", None)
     suffix = f" - response: {_preview(summary)}" if summary else ""
-    logger.info(
-        f'"{request.method} {request.url.path} HTTP/1.1" {response.status_code} '
+    status = response.status_code
+    log_fn = logger.error if status >= 500 else logger.warning if status >= 400 else logger.info
+    log_fn(
+        f'"{request.method} {request.url.path} HTTP/1.1" {status} '
         f"- {elapsed:.2f}s{suffix}"
     )
     return response
@@ -310,7 +314,7 @@ async def _run_claude(
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
-            logger.info(f"CLI_ERROR timed out after {CLI_TIMEOUT_SECONDS}s")
+            logger.error(f"CLI_ERROR timed out after {CLI_TIMEOUT_SECONDS}s")
             raise HTTPException(
                 status_code=504,
                 detail=f"claude CLI timed out after {CLI_TIMEOUT_SECONDS}s",
@@ -328,7 +332,7 @@ async def _run_claude(
             detail = str(result["result"])
         else:
             detail = stderr_bytes.decode(errors="replace").strip()
-        logger.info(f"CLI_ERROR returncode={proc.returncode} detail={_preview(detail)}")
+        logger.error(f"CLI_ERROR returncode={proc.returncode} detail={_preview(detail)}")
         raise HTTPException(status_code=502, detail=f"claude CLI error: {detail}")
 
     if result is None:
@@ -337,7 +341,7 @@ async def _run_claude(
 
     if result.get("is_error"):
         detail = result.get("result", "unknown error")
-        logger.info(f"CLI_ERROR is_error=true detail={_preview(str(detail))}")
+        logger.error(f"CLI_ERROR is_error=true detail={_preview(str(detail))}")
         raise HTTPException(status_code=502, detail=f"claude CLI error: {detail}")
 
     text_output = result.get("result", "")
@@ -387,7 +391,7 @@ async def _run_claude_stream(prompt: str, system_prompt: str, model: str):
                 except asyncio.TimeoutError:
                     proc.kill()
                     await proc.wait()
-                    logger.info(f"CLI_ERROR timed out after {CLI_TIMEOUT_SECONDS}s (stream)")
+                    logger.error(f"CLI_ERROR timed out after {CLI_TIMEOUT_SECONDS}s (stream)")
                     raise HTTPException(
                         status_code=504,
                         detail=f"claude CLI timed out after {CLI_TIMEOUT_SECONDS}s",

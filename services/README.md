@@ -56,6 +56,7 @@ needing `conda` on `PATH` (override with `CONDA_BASE_DIR` if your install is in 
 
 | File | What it is |
 |---|---|
+| `_logsetup.py` | Shared console + HTTP request/response logging for every service (`make_logger`, `install_request_logging` for FastAPI, `install_flask_request_logging` for Flask). Standard line: `2026-07-27 18:51:18 - <service> - LEVEL - message`, plus one auto-logged summary line per request (`METHOD /path -> status (Nms)`). See the `robot-service-logging` skill (`.claude/skills/`) before adding a new service or touching an existing one's logging. |
 | `_find_conda_env.sh` | Resolves a conda env's `python` path without relying on `PATH` (used by the launchers). |
 | `convert_phowhisper_mlx.sh` | Converts a PhoWhisper (Hugging Face) model to MLX for the Whisper server's MLX backend. |
 | `r1sh.py` | Runs a single shell command on a PHICOMM R1 over its WebSocket shell (port 8080). Set `R1_IP`. |

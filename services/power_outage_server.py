@@ -26,6 +26,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 import uvicorn
 
+from _logsetup import make_logger, install_request_logging
+
 URL = os.environ.get("POWER_URL", "https://lichcupdien.org/lich-cup-dien-moc-hoa-long-an")
 CLASS = os.environ.get("POWER_CLASS", "lcd_detail_wrapper")
 TARGET_AP = os.environ.get("POWER_TARGET_AP", "binh nam")  # our hamlet (already normalized)
@@ -39,8 +41,7 @@ REFRESH_SEC = int(os.environ.get("POWER_REFRESH_SEC", "10800"))  # 3 hours
 NONE_MSG = "Không có lịch cúp điện ở " + AREA_LABEL
 
 
-def log(msg):
-    print(f"{datetime.now():%Y-%m-%d %H:%M:%S} [poweroutage] {msg}", flush=True)
+log = make_logger("poweroutage")
 
 
 def _norm(s):
@@ -139,6 +140,7 @@ def _bg_loop():
 
 
 app = FastAPI()
+install_request_logging(app, "poweroutage", log)
 
 
 @app.get("/health")

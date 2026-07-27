@@ -9,6 +9,8 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, StreamingResponse
 import uvicorn
 
+from _logsetup import make_logger, install_request_logging
+
 PORT = int(os.environ.get("LOGWEB_PORT", "8009"))
 # services/ is a sibling of xiaozhi-esp32-server/ at the repo root -> resolve relative to this file.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -34,6 +36,7 @@ LOGS = {
 }
 
 app = FastAPI()
+log = install_request_logging(app, "logweb")
 
 
 def last_lines(path, n=300):
@@ -100,59 +103,153 @@ async def stream(name: str):
 PAGE = """<!doctype html><html lang="vi"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Robot log live</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
-:root{color-scheme:dark}
+:root{color-scheme:dark;
+  --bg:#0B0D10;--surface:#14171C;--surface-2:#1C2027;--elev:#242A33;--border:#262B33;
+  --text:#F2F5F9;--muted:#8B95A5;--faint:#5C6675;
+  --accent:#4C8DFF;--accent-2:#7B5CFF;
+  --teal:#00B894;--violet:#7C5CFF;--amber:#F5A623;--red:#FF5A52;
+  --ease:cubic-bezier(.22,1,.36,1);
+  --radius-card:14px;--radius-control:10px;--radius-pill:999px;
+}
+:root[data-theme="light"]{
+  --bg:#F7F8FA;--surface:#FFFFFF;--surface-2:#F0F2F6;--elev:#E8EBF1;--border:#E3E7EE;
+  --text:#0E1116;--muted:#5B6572;--faint:#8B95A5;
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){
+    --bg:#F7F8FA;--surface:#FFFFFF;--surface-2:#F0F2F6;--elev:#E8EBF1;--border:#E3E7EE;
+    --text:#0E1116;--muted:#5B6572;--faint:#8B95A5;
+  }
+}
 *{box-sizing:border-box}
-body{margin:0;background:#0b0e14;color:#cdd6f4;font:13px/1.45 ui-monospace,Menlo,Consolas,monospace}
-header{position:sticky;top:0;display:flex;gap:8px;flex-wrap:wrap;align-items:center;
-  padding:8px 10px;background:#11151f;border-bottom:1px solid #222a3a}
-select,input,button{background:#1b2030;color:#cdd6f4;border:1px solid #2a3346;border-radius:6px;
-  padding:6px 9px;font:inherit}
-button{cursor:pointer}
-button.on{background:#2d6cdf;border-color:#2d6cdf}
-.dot{width:9px;height:9px;border-radius:50%;background:#f38ba8;display:inline-block}
-.dot.live{background:#a6e3a1}
-#log{padding:8px 10px;white-space:pre-wrap;word-break:break-word}
-#log .hi{background:#3a2f00}
-.muted{color:#7f8aa3}
-#cfg{display:none;gap:10px;flex-wrap:wrap;align-items:center;padding:8px 10px;background:#0f1420;border-bottom:1px solid #222a3a}
-#cfg.show{display:flex}
-#cfg label{display:flex;align-items:center;gap:5px}
+body{margin:0;background:var(--bg);color:var(--text);
+  font:13px/1.5 "Geist Mono",ui-monospace,Menlo,Consolas,monospace}
+header{position:sticky;top:0;z-index:2;display:flex;gap:8px;flex-wrap:wrap;align-items:center;
+  padding:10px 14px;background:var(--surface);border-bottom:1px solid var(--border);
+  box-shadow:0 1px 2px rgba(0,0,0,.3),0 4px 16px rgba(0,0,0,.15)}
+.brand{display:flex;align-items:center;gap:8px;margin-right:4px;font-family:"Geist",ui-sans-serif,system-ui;font-weight:600}
+.brand .glyph{width:20px;height:20px;border-radius:6px;flex:none;
+  background:linear-gradient(120deg,var(--accent),var(--accent-2))}
+select,input,button{background:var(--surface-2);color:var(--text);border:1px solid var(--border);
+  border-radius:var(--radius-control);padding:6px 10px;font:12px "Geist Mono",monospace;
+  transition:background .15s var(--ease),border-color .15s var(--ease)}
+button{cursor:pointer;border-radius:var(--radius-pill)}
+button:hover{background:var(--elev)}
+button.on{background:linear-gradient(120deg,var(--accent),var(--accent-2));border-color:transparent;color:#fff}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--red);display:inline-block;flex:none;
+  box-shadow:0 0 0 3px color-mix(in srgb, var(--red) 25%, transparent)}
+.dot.live{background:var(--teal);box-shadow:0 0 0 3px color-mix(in srgb, var(--teal) 25%, transparent)}
+#log{padding:10px 14px;white-space:pre-wrap;word-break:break-word}
+#log .line{padding:1px 0;border-radius:4px}
+#log .hi{background:color-mix(in srgb, var(--amber) 20%, transparent)}
+.muted{color:var(--muted)}
+.tsel{appearance:none}
+/* logcat-style level colors */
+.lvl-FATAL{color:#fff;background:var(--red);padding:0 4px;border-radius:3px}
+.lvl-ERROR{color:var(--red)}
+.lvl-WARN{color:var(--amber)}
+.lvl-INFO{color:var(--teal)}
+.lvl-DEBUG{color:var(--accent)}
+.lvl-TRACE{color:var(--faint)}
+.tok-date{color:var(--faint)}
+.tok-ver{color:var(--violet)}
+@media (max-width:640px){
+  header{padding:8px 10px;gap:6px}
+  .brand{width:100%;order:-2}
+  .dot{order:-1}
+  select,#flt{flex:1 1 auto;min-width:0}
+  button{padding:7px 10px}
+  #cnt{width:100%;order:9;text-align:right}
+  #log{padding:8px 10px;font-size:12px}
+}
 </style></head><body>
 <header>
+  <span class="brand"><span class="glyph"></span>Robot log</span>
   <span class="dot" id="dot"></span>
-  <select id="src"></select>
+  <select id="src" class="tsel"></select>
   <input id="flt" placeholder="lọc (chữ con)..." size="18">
   <button id="pause">Tạm dừng</button>
   <button id="wrap" class="on">Wrap</button>
   <button id="clear">Xoá màn</button>
-  <button id="cfgBtn">⚙ STT ảo giác</button>
+  <button id="theme">☀/☾</button>
   <span class="muted" id="cnt">0 dòng</span>
 </header>
-<div id="cfg">
-  <b>STT chống ảo giác (:8001 · whisper hoặc moonshine, tuỳ cái nào đang chạy · live, khỏi restart):</b>
-  <label><input type="checkbox" id="cfgVad"> VAD (lọc ồn/im)</label>
-  <label>VAD ngưỡng <input id="cfgVadT" size="4"></label>
-  <label>logprob min <input id="cfgLp" size="5"></label>
-  <label>dur min <input id="cfgDur" size="4"></label>
-  <button id="cfgSave" class="on">Lưu</button>
-  <span class="muted" id="cfgMsg"></span>
-</div>
 <div id="log"></div>
+<script>
+(function(){
+  var saved=localStorage.getItem('relay-theme');
+  if(saved)document.documentElement.setAttribute('data-theme',saved);
+})();
+document.getElementById('theme').onclick=function(){
+  var cur=document.documentElement.getAttribute('data-theme');
+  var next=cur==='light'?'dark':'light';
+  document.documentElement.setAttribute('data-theme',next);
+  localStorage.setItem('relay-theme',next);
+};
+// logcat-style classification: date/time, version tokens, level keywords
+var DATE_RE=/\\b(\\d{4}-\\d{2}-\\d{2}[ T]\\d{2}:\\d{2}:\\d{2}(?:[.,]\\d+)?|\\d{2}:\\d{2}:\\d{2}(?:[.,]\\d+)?)\\b/;
+var VER_RE=/\\b(v?\\d+\\.\\d+(?:\\.\\d+)?(?:-[a-zA-Z0-9]+)?)\\b/;
+var LEVEL_RE=/\\b(FATAL|CRITICAL|ERROR|WARN(?:ING)?|INFO|DEBUG|TRACE)\\b/;
+function escapeHtml(s){
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function colorize(line){
+  var lvlClass='';
+  var m=line.match(LEVEL_RE);
+  if(m){
+    var lv=m[1].toUpperCase();
+    if(lv==='WARNING')lv='WARN';
+    if(lv==='CRITICAL')lv='FATAL';
+    lvlClass='lvl-'+lv;
+  }
+  var html=escapeHtml(line);
+  html=html.replace(DATE_RE,function(x){return '<span class="tok-date">'+x+'</span>'});
+  html=html.replace(VER_RE,function(x){return '<span class="tok-ver">'+x+'</span>'});
+  if(m){
+    var esc=escapeHtml(m[1]);
+    html=html.replace(esc,'<span class="'+lvlClass+'">'+esc+'</span>');
+  }
+  return html;
+}
+</script>
 <script>
 const srcSel=document.getElementById('src'), log=document.getElementById('log'),
   flt=document.getElementById('flt'), dot=document.getElementById('dot'),
   cnt=document.getElementById('cnt'), pauseBtn=document.getElementById('pause');
 const SOURCES=__SOURCES__;
 SOURCES.forEach(n=>{const o=document.createElement('option');o.value=n;o.textContent=n;srcSel.appendChild(o)});
-let es=null,paused=false,n=0;
+const wrapBtn=document.getElementById('wrap');
+const ST_KEY='logweb-state';
+function loadState(){try{return JSON.parse(localStorage.getItem(ST_KEY))||{};}catch(e){return {};}}
+function saveState(patch){const s=Object.assign(loadState(),patch);localStorage.setItem(ST_KEY,JSON.stringify(s));}
+const initial=loadState();
+if(initial.src && SOURCES.includes(initial.src))srcSel.value=initial.src;
+if(typeof initial.flt==='string')flt.value=initial.flt;
+if(initial.wrap===false){wrapBtn.classList.remove('on');log.style.whiteSpace='pre';}
+let es=null,paused=!!initial.paused,n=0;
+if(paused){pauseBtn.classList.add('on');pauseBtn.textContent='Tiếp tục';}
 function atBottom(){return window.innerHeight+window.scrollY>=document.body.scrollHeight-60}
-function add(line){
+function applyFilterToLine(div,f){
+  const show=!f || div.dataset.raw.toLowerCase().includes(f);
+  div.style.display=show?'':'none';
+  div.classList.toggle('hi',!!f && show);
+}
+function reapplyFilter(){
   const f=flt.value.trim().toLowerCase();
-  if(f && !line.toLowerCase().includes(f))return;
+  for(const div of log.children)applyFilterToLine(div,f);
+  if(!paused && atBottom())window.scrollTo(0,document.body.scrollHeight);
+}
+function add(line){
   const div=document.createElement('div');
-  if(f){div.className='hi'}
-  div.textContent=line; log.appendChild(div); n++;
+  div.className='line';
+  div.dataset.raw=line;
+  div.innerHTML=colorize(line);
+  log.appendChild(div); n++;
+  applyFilterToLine(div,flt.value.trim().toLowerCase());
   while(log.childNodes.length>4000)log.removeChild(log.firstChild);
   cnt.textContent=n+' dòng';
   if(!paused && atBottom())window.scrollTo(0,document.body.scrollHeight);
@@ -164,28 +261,12 @@ function connect(){
   es.onerror=()=>dot.classList.remove('live');
   es.onmessage=e=>{if(!paused)add(e.data)};
 }
-srcSel.onchange=connect;
-flt.oninput=()=>{};
-pauseBtn.onclick=()=>{paused=!paused;pauseBtn.classList.toggle('on',paused);pauseBtn.textContent=paused?'Tiếp tục':'Tạm dừng'};
-document.getElementById('wrap').onclick=function(){this.classList.toggle('on');
-  log.style.whiteSpace=this.classList.contains('on')?'pre-wrap':'pre'};
+srcSel.onchange=()=>{saveState({src:srcSel.value});connect();};
+flt.oninput=()=>{saveState({flt:flt.value});reapplyFilter();};
+pauseBtn.onclick=()=>{paused=!paused;pauseBtn.classList.toggle('on',paused);pauseBtn.textContent=paused?'Tiếp tục':'Tạm dừng';saveState({paused});};
+wrapBtn.onclick=function(){this.classList.toggle('on');
+  log.style.whiteSpace=this.classList.contains('on')?'pre-wrap':'pre';saveState({wrap:this.classList.contains('on')});};
 document.getElementById('clear').onclick=()=>{log.innerHTML='';n=0;cnt.textContent='0 dòng'};
-// --- STT anti-hallucination config (calls :8001 directly, same host — whichever STT backend is live) ---
-const WHOST=`http://${location.hostname}:8001`, cfg=document.getElementById('cfg');
-const $c=id=>document.getElementById(id);
-async function loadCfg(){try{const c=await(await fetch(WHOST+'/config')).json();
-  $c('cfgVad').checked=c.vad_enabled;$c('cfgVadT').value=c.vad_threshold;
-  $c('cfgLp').value=c.min_logprob;$c('cfgDur').value=c.min_dur;$c('cfgMsg').textContent='';
-}catch(e){$c('cfgMsg').textContent='(không nối được STT :8001)';}}
-const setCfg=(k,v)=>fetch(`${WHOST}/config?key=${k}&value=${encodeURIComponent(v)}`,{method:'POST'});
-$c('cfgBtn').onclick=()=>{cfg.classList.toggle('show');if(cfg.classList.contains('show'))loadCfg();};
-$c('cfgSave').onclick=async()=>{
-  await setCfg('vad_enabled',$c('cfgVad').checked?'1':'0');
-  await setCfg('vad_threshold',$c('cfgVadT').value);
-  await setCfg('min_logprob',$c('cfgLp').value);
-  await setCfg('min_dur',$c('cfgDur').value);
-  $c('cfgMsg').textContent='đã lưu ✓';setTimeout(()=>$c('cfgMsg').textContent='',1500);
-};
 connect();
 </script></body></html>"""
 

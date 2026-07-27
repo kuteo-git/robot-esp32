@@ -31,10 +31,9 @@ from fastapi.responses import Response
 from vieneu import Vieneu
 import uvicorn
 
+from _logsetup import make_logger, install_request_logging
 
-def log(msg, level="INFO"):
-    """xiaozhi-style log line: '2026-06-19 19:34:07 - vieneu - LEVEL - <message>'."""
-    print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - vieneu - {level} - {msg}", flush=True)
+log = make_logger("vieneu")
 
 VOICE = os.environ.get("VIENEU_VOICE", "Doan")
 PORT = int(os.environ.get("VIENEU_PORT", "8002"))
@@ -458,6 +457,7 @@ def _fix_allcaps(text):
 
 
 app = FastAPI()
+install_request_logging(app, "vieneu", log)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 

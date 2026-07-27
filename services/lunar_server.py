@@ -18,11 +18,11 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 import uvicorn
 
+from _logsetup import make_logger, install_request_logging
+
 PORT = int(os.environ.get("LUNAR_PORT", "8013"))
 
-
-def log(msg):
-    print(f"{dt.now():%Y-%m-%d %H:%M:%S} [lunar] {msg}", flush=True)
+log = make_logger("lunar")
 
 
 class LunarDate(object):
@@ -254,6 +254,7 @@ def compute(d: date):
 
 
 app = FastAPI()
+install_request_logging(app, "lunar", log)
 
 
 @app.get("/health")

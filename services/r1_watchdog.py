@@ -23,6 +23,8 @@ from datetime import datetime
 
 import websockets
 
+from _logsetup import make_logger
+
 R1_IPS = [ip.strip() for ip in os.environ.get(
     "R1_IPS", os.environ.get("R1_IP", "")).split(",") if ip.strip()]
 CHECK_SEC = int(os.environ.get("R1_WATCHDOG_CHECK_SEC", "30"))
@@ -35,8 +37,7 @@ APP_ACTIVITY = os.environ.get("R1_APP_ACTIVITY", "info.dourok.voicebot.MainActiv
 RECOVER_CMD = f"am force-stop {APP_PACKAGE}; am start -n {APP_PACKAGE}/{APP_ACTIVITY}"
 
 
-def log(msg):
-    print(f"{datetime.now():%Y-%m-%d %H:%M:%S} [r1-watchdog] {msg}", flush=True)
+log = make_logger("r1-watchdog")
 
 
 def ping_ok(ip):

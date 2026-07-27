@@ -20,6 +20,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 import uvicorn
 
+from _logsetup import make_logger, install_request_logging
+
 URL = os.environ.get("WEATHER_URL", "https://thoitiet.vn/long-an/moc-hoa/binh-hoa-trung")
 CLASS = os.environ.get("WEATHER_CLASS", "col-12 col-md-8")
 LOCATION = os.environ.get("WEATHER_LOCATION", "Bình Hòa Trung, Mộc Hóa, Long An")
@@ -36,8 +38,7 @@ MULTIDAY_CLASS = os.environ.get("WEATHER_MULTIDAY_CLASS", "card-body pb-0 pt-0")
 MULTIDAY_REFRESH_SEC = int(os.environ.get("WEATHER_MULTIDAY_REFRESH_SEC", "10800"))  # 3 hours
 
 
-def log(msg):
-    print(f"{datetime.now():%Y-%m-%d %H:%M:%S} [weather] {msg}", flush=True)
+log = make_logger("weather")
 
 
 def get_text_by_id(url, class_):
@@ -177,6 +178,7 @@ def _bg_loop_multiday():
 
 
 app = FastAPI()
+install_request_logging(app, "weather", log)
 
 
 @app.get("/health")
