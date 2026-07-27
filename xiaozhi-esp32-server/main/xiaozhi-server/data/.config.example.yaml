@@ -51,7 +51,7 @@ listen_start_voice: "config/assets/listen_ding.wav"
 thinking_loop_sound: true
 thinking_loop_sound_file: "config/assets/thinking/pool"
 thinking_loop_sound_fallback: "config/assets/thinking/loading.mp3"   # kho rỗng/thiếu -> dùng tiếng loading cũ của loa (giữ nguyên mức, không áp gain)
-thinking_loop_gain_db: -8   # tiếng nền nên nằm DƯỚI mọi thứ khác; bớt âm = to hơn
+thinking_loop_gain_db: 0   # 0 = ngang tiếng loading cũ (clip đã cân sẵn về mức nền). Âm = nhỏ hơn; quá +3 là vỡ tiếng.
 # ---------- Giữ phiên trò chuyện lâu hơn ----------
 # Im KHÔNG nói gì quá ngần này (giây) thì server tự kết thúc phiên. Mặc định 120s.
 close_connection_no_voice_time: 60
