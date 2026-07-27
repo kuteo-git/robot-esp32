@@ -22,7 +22,7 @@ CLIP_START_S="${CLIP_START_S:-20}"   # skip the intro fade
 CLIP_SEC="${CLIP_SEC:-30}"           # loop length; the wait it covers is ~40-60s
 FADE_S="${FADE_S:-0.8}"
 RATE="${RATE:-24000}"                # base.py resamples to the connection rate anyway
-LOUDNESS="${LOUDNESS:--23}"          # equal loudness across clips, not final volume
+LOUDNESS="${LOUDNESS:--16}"          # mức đích của clip. TP=-1.5 bên dưới là limiter chống vỡ tiếng
 
 command -v ffmpeg >/dev/null || { echo "cần ffmpeg"; exit 1; }
 
@@ -69,7 +69,7 @@ for f in "$TMP"/*.wav; do
   fade_out_at=$(echo "$CLIP_SEC - $FADE_S" | bc)
   ffmpeg -nostdin -loglevel error -y \
     -ss "$CLIP_START_S" -t "$CLIP_SEC" -i "$f" \
-    -af "loudnorm=I=${LOUDNESS}:TP=-2:LRA=11,afade=t=in:st=0:d=${FADE_S},afade=t=out:st=${fade_out_at}:d=${FADE_S}" \
+    -af "loudnorm=I=${LOUDNESS}:TP=-1.5:LRA=11,afade=t=in:st=0:d=${FADE_S},afade=t=out:st=${fade_out_at}:d=${FADE_S}" \
     -ac 1 -ar "$RATE" -sample_fmt s16 \
     "$out"
   printf '  %s  %s\n' "$(basename "$out")" "$(du -h "$out" | cut -f1)"
