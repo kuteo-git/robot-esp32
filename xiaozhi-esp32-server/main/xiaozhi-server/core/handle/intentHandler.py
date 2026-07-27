@@ -37,7 +37,9 @@ async def handle_user_intent(conn: "ConnectionHandler", text):
     if await checkWakeupWords(conn, filtered_text):
         return True
 
-    if await check_direct_news(conn, filtered_text):
+    # Raw text, not filtered_text: this one echoes what was said back to the chat panel, and
+    # remove_punctuation_and_length strips spaces, so the filtered form would display as "đọcbảntin".
+    if await check_direct_news(conn, text):
         return True
 
     if conn.intent_type == "function_call":
@@ -89,8 +91,10 @@ async def check_direct_news(conn: "ConnectionHandler", text):
     removes an LLM round-trip from the wait and makes the schedule, the panel's test button and
     saying it out loud behave identically.
     """
-    _, text = remove_punctuation_and_length(text)
-    if text.lower().strip() not in DIRECT_NEWS_CMDS:
+    # Matched normalized, DISPLAYED raw. remove_punctuation_and_length strips spaces as well as
+    # punctuation, so reusing its output for the echo put "đọcbảntin" in the chat panel.
+    _, normalized = remove_punctuation_and_length(text)
+    if normalized.lower().strip() not in DIRECT_NEWS_CMDS:
         return False
     func_item = all_function_registry.get(NEWS_TOOL)
     if func_item is None or not _tool_enabled(conn, NEWS_TOOL):
