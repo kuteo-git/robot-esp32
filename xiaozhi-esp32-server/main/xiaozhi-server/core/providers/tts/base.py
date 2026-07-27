@@ -236,7 +236,7 @@ class TTSProviderBase(ABC):
         sound_file, apply_gain = picked
         # Negative dB: this plays UNDER the wait, so it should register as ambience rather than
         # compete with the spoken filler that starts alongside it.
-        gain_db = float(self.conn.config.get("thinking_loop_gain_db", -6)) if apply_gain else 0.0
+        gain_db = float(self.conn.config.get("thinking_loop_gain_db", -12)) if apply_gain else 0.0
         # Only a single reused clip is worth caching; see _get_thinking_loop_pcm.
         cacheable = sound_file == configured or not apply_gain
         stop_event = threading.Event()
