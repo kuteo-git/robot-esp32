@@ -1,5 +1,6 @@
 import requests
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 from bs4 import BeautifulSoup
 from config.logger import setup_logging
 from plugins_func.register import register_function, ToolType, ActionResponse, Action
@@ -34,7 +35,7 @@ GET_NEWS_VIETNAM_FUNCTION_DESC = {
         "description": (
             "Gọi khi người dùng muốn nghe TIN TỨC / BẢN TIN "
             "(vd 'đọc tin tức', 'tin công nghệ', 'thời sự hôm nay', 'có tin gì mới', "
-            "'kể chi tiết tin đó'). Nguồn: VnExpress, Tinh Tế, The Verge. "
+            "'kể chi tiết tin đó'). Nguồn: VnExpress, The Verge. "
             "Mặc định đọc vài tiêu đề mới nhất; đặt detail=true để đọc chi tiết 1 bài."
         ),
         "parameters": {
@@ -92,7 +93,7 @@ def _fetch_feed(url, limit=5):
                     "link": link,
                     "description": _clean(desc)[:300],
                 })
-        else:  # RSS 2.0 (VnExpress, Tinh Tế)
+        else:  # RSS 2.0 (VnExpress)
             for item in root.findall(".//item")[:limit]:
                 t = item.find("title")
                 l = item.find("link")
@@ -109,9 +110,22 @@ def _fetch_feed(url, limit=5):
 
 
 def _fetch_multi(urls, total):
-    """Merge multiple feeds: take a few items per source then interleave (round-robin) for variety."""
+    """Merge multiple feeds: take a few items per source then interleave (round-robin) for variety.
+
+    Sources are fetched CONCURRENTLY, so a category costs its slowest feed rather than their sum --
+    the same thing news_server.py does. Only worth a fraction of a second at today's two-source
+    maximum, but it is the difference that grows with every feed added, and _fetch_feed already
+    swallows its own errors so a failed source still just yields an empty list.
+
+    Order is preserved: executor.map returns in submission order, which the round-robin below
+    depends on to interleave sources evenly.
+    """
     per = max(2, (total // max(1, len(urls))) + 2)
-    lists = [_fetch_feed(u, per) for u in urls]
+    if len(urls) > 1:
+        with ThreadPoolExecutor(max_workers=len(urls)) as ex:
+            lists = list(ex.map(lambda u: _fetch_feed(u, per), urls))
+    else:
+        lists = [_fetch_feed(u, per) for u in urls]
     merged, i = [], 0
     while len(merged) < total and any(i < len(l) for l in lists):
         for l in lists:
