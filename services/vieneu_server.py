@@ -372,6 +372,9 @@ _ABBREV = {
     # NOTE: ĐH is ambiguous (Đại học / Điện lực). "Đại học" is overwhelmingly the news sense.
     "ĐH": "Đại học", "THPT": "Trung học phổ thông", "THCS": "Trung học cơ sở",
     "LĐLĐ": "Liên đoàn Lao động", "ĐTN": "Đoàn Thanh niên",
+    # Matching is case-sensitive, so the spellings that actually turn up in copy each need an entry.
+    "VNeID": "Định danh điện tử", "VNEID": "Định danh điện tử", "VneID": "Định danh điện tử",
+    "VNeId": "Định danh điện tử",
     "HLHPN": "Hội Liên hiệp Phụ nữ", "QĐND": "Quân đội nhân dân", "CAND": "Công an nhân dân",
     # Seen in this deployment's own TTS traffic (counted from the logs)
     "AI": "Ây Ai", "CEO": "Xi I Âu", "USD": "đô la Mỹ", "VND": "Việt Nam đồng",
