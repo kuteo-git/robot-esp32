@@ -39,8 +39,8 @@ def run():
 
         base_mod.AudioSegment.from_file = counting_from_file
         try:
-            pcm1 = tts._get_thinking_loop_pcm(wav_path)
-            pcm2 = tts._get_thinking_loop_pcm(wav_path)
+            pcm1 = tts._get_thinking_loop_pcm(wav_path, 0)
+            pcm2 = tts._get_thinking_loop_pcm(wav_path, 0)
         finally:
             base_mod.AudioSegment.from_file = orig
 

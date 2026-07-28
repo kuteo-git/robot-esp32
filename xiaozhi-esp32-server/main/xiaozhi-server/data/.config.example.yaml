@@ -53,18 +53,11 @@ exit_goodbye_voice: "config/assets/goodbye.wav"
 listen_start_sound: true
 listen_start_voice: "config/assets/listen_ding.wav"
 # ---------- Tiếng "thinking" lặp khi robot đang xử lý (LLM+TTS) cho tới khi có câu trả lời ----------
-# Lượt BÌNH THƯỜNG giữ 1 clip loading duy nhất — câu trả lời thường xong trong vài giây, nhạc nền
-# chưa kịp vào đã tắt.
-# Riêng ĐỌC BẢN TIN (thinking_loop_news_*) chờ 45-60s, đủ lâu để nghe 1 vòng lặp ngắn thấy chán,
-# nên dùng cả kho nhạc nền. Trỏ tới THƯ MỤC = XOAY VÒNG, mỗi lượt 1 clip, chỉ lặp lại một clip sau
-# khi tất cả clip khác đã phát (bốc ngẫu nhiên thì sẽ trùng). Bỏ 2 dòng news đi thì bản tin quay
-# về dùng tiếng loading thường. Tạo lại kho: services/fetch_thinking_sounds.sh (audio không ở git).
+# MỌI lượt đều dùng 1 clip loading duy nhất, kể cả đọc bản tin: bản tin giờ phát từng câu ngay khi
+# LLM viết xong (~5s là có tiếng), không còn cảnh chờ 45-60s để phải mở nhạc nền.
 thinking_loop_sound: true
 thinking_loop_sound_file: "config/assets/thinking/loading.mp3"
-thinking_loop_sound_fallback: "config/assets/thinking/loading.mp3"   # kho rỗng/thiếu -> dùng tiếng loading này (giữ nguyên mức, không áp gain)
 thinking_loop_gain_db: 0
-thinking_loop_news_sound_file: "config/assets/thinking/pool"
-thinking_loop_news_gain_db: -6   # chỉ là trim. Muốn TO hơn -> đổi LOUDNESS trong fetch_thinking_sounds.sh rồi build lại (quá +4dB là vỡ tiếng)
 # ---------- Giữ phiên trò chuyện lâu hơn ----------
 # Im KHÔNG nói gì quá ngần này (giây) thì server tự kết thúc phiên. Mặc định 120s.
 close_connection_no_voice_time: 60

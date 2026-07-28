@@ -185,10 +185,9 @@ async def _run(conn, spoken_filler=True):
         if spoken_filler:
             await asyncio.sleep(FILLER_GRACE_S)
         try:
-            # "news" profile: the music-bed pool, not the ordinary loading clip. Short now that
-            # sentences stream (~5s to the first one), but it still covers the fetch + first
-            # sentence, and the pool costs nothing when the wait turns out to be brief.
-            conn.tts.start_thinking_loop(profile="news")
+            # The ordinary loading clip, same as any other turn: sentences stream now (~5s to the
+            # first one), so the wait no longer runs long enough to warrant its own music bed.
+            conn.tts.start_thinking_loop()
         except Exception as e:
             logger.bind(tag=TAG).warning(f"news bulletin: không bật được tiếng chờ: {e}")
 

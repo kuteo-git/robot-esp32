@@ -1,10 +1,8 @@
 import os
 import re
-import glob
 import time
 import uuid
 import queue
-import random
 import asyncio
 import threading
 import traceback
@@ -34,9 +32,6 @@ TAG = __name__
 logger = setup_logging()
 
 _THINKING_LOOP_PCM_CACHE = {}
-# Where each pool directory is up to in its rotation, shared across connections.
-_THINKING_ROTATION = {}
-_THINKING_ROTATION_LOCK = threading.Lock()
 
 
 class TTSProviderBase(ABC):
@@ -139,18 +134,14 @@ class TTSProviderBase(ABC):
     def handle_audio_file(self, file_audio: bytes, text):
         self.before_stop_play_files.append((file_audio, text))
 
-    def _get_thinking_loop_pcm(self, sound_file, gain_db, cacheable):
+    def _get_thinking_loop_pcm(self, sound_file, gain_db):
         """Decode+resample the thinking-loop sound to this connection's sample rate.
 
         Gain is applied here rather than per frame: it is a property of the decoded clip, so
         attenuating once at decode time keeps it out of the playback loop entirely.
 
-        Cached only for a SINGLE configured clip, where the same handful of bytes is reused every
-        turn forever. A pool is not cached: 40 clips at the 48kHz this device runs decode to ~110MB
-        of permanently-resident PCM, and decoding one costs a measured 8ms -- paying that per turn,
-        once, against a loop that then runs for tens of seconds is not a trade worth 110MB."""
-        if not cacheable:
-            return self._decode_thinking_pcm(sound_file, gain_db)
+        Cached because a single configured clip means the same handful of bytes is reused every
+        turn forever, and decoding one costs a measured 8ms."""
         key = (sound_file, self.conn.sample_rate, gain_db)
         pcm = _THINKING_LOOP_PCM_CACHE.get(key)
         if pcm is None:
@@ -165,92 +156,25 @@ class TTSProviderBase(ABC):
             audio = audio.apply_gain(gain_db)
         return audio.raw_data
 
-    def _thinking_fallback(self):
-        """The speaker's original loading clip, used when the pool is missing or empty.
-
-        Without this, a pool that has not been built yet (the audio is not in git) or a directory
-        that got cleared means the wait plays in silence -- which reads as the robot having died,
-        exactly what the thinking sound exists to prevent. Silence remains possible only if this
-        clip is gone too."""
-        fallback = self.conn.config.get(
-            "thinking_loop_sound_fallback", "config/assets/thinking/loading.mp3"
-        )
-        if not fallback or not os.path.exists(fallback):
-            return None
-        # (path, apply_gain=False): thinking_loop_gain_db is calibrated for the pool, whose clips
-        # were levelled to a known loudness when they were built. This clip was not -- it is the
-        # speaker's original thinking sound, already mixed to sit right on its own, and pushing it
-        # down another 18dB would make the fallback effectively silent.
-        return fallback, False
-
-    def _pick_thinking_sound(self, configured):
-        """A DIRECTORY cycles through the clips in order; a file means "always this one".
-
-        Deliberately a cycle rather than a random draw: random repeats. Drawing independently from
-        40 clips still lands the same one twice in a row about once every 40 turns, and the whole
-        point of a pool is that a clip is not heard again until the others have had their turn. So
-        the position advances by one per turn and wraps back to the first once the pool is
-        exhausted, which makes the gap between repeats exactly the pool size.
-
-        The listing is re-read each turn so clips can be added or removed without a restart; the
-        position is keyed to the pool's contents, so it survives that but resets if the pool
-        actually changes. Module-level state under a lock, since separate connections share the
-        rotation -- otherwise each new connection would restart at the first clip.
-
-        Returns (path, apply_gain) or None. Falls back to the speaker's original clip whenever the
-        configured sound is missing or the pool is empty, so the wait never plays in silence."""
-        if not os.path.isdir(configured):
-            return (configured, True) if os.path.exists(configured) else self._thinking_fallback()
-        pool = sorted(
-            p for ext in ("wav", "mp3", "ogg", "m4a", "flac")
-            for p in glob.glob(os.path.join(configured, f"*.{ext}"))
-        )
-        if not pool:
-            return self._thinking_fallback()
-        with _THINKING_ROTATION_LOCK:
-            state = _THINKING_ROTATION.get(configured)
-            if state is None or state["pool"] != pool:
-                # Start somewhere random on a fresh pool, so a server restart does not always
-                # open with the same clip.
-                state = {"pool": pool, "idx": random.randrange(len(pool))}
-                _THINKING_ROTATION[configured] = state
-            chosen = pool[state["idx"]]
-            state["idx"] = (state["idx"] + 1) % len(pool)
-        return chosen, True
-
-    def start_thinking_loop(self, profile=""):
+    def start_thinking_loop(self):
         """Loop the configured 'thinking' placeholder sound on tts_audio_queue from turn
         start until stop_thinking_loop() is called (handle_opus calls it automatically once
         the real answer's first audio frame is ready) -- covers both LLM and TTS-synthesis
         latency with no gap, since the loop runs on its own thread independent of both.
 
-        profile names an ALTERNATIVE sound for a particular kind of wait, reading
-        thinking_loop_<profile>_sound_file / _gain_db instead of the plain keys. Only the news
-        bulletin uses one ("news"): its wait is 45-60s rather than the few seconds an ordinary
-        turn takes, which is long enough that a short loop grates and worth a pool of real music.
-        Every other turn keeps the original single loading clip -- a normal reply is over before a
-        music bed would establish itself. An unset profile key falls back to the plain one, so
-        removing the news config reverts that path to the ordinary sound rather than silence.
+        One clip for every kind of wait, including the news bulletin: reading now starts a few
+        seconds in (the bulletin streams sentence by sentence), so the long wait that once justified
+        a pool of music beds for it no longer exists.
         """
         if getattr(self.conn, "text_only", False):
             return
         if not self.conn.config.get("thinking_loop_sound", False):
             return
         cfg = self.conn.config
-        key = f"thinking_loop_{profile}_" if profile else "thinking_loop_"
-        configured = cfg.get(f"{key}sound_file") or cfg.get("thinking_loop_sound_file")
-        if not configured:
+        sound_file = cfg.get("thinking_loop_sound_file")
+        if not sound_file or not os.path.exists(sound_file):
             return
-        picked = self._pick_thinking_sound(configured)
-        if not picked:
-            return
-        sound_file, apply_gain = picked
-        # Negative dB: this plays UNDER the wait, so it should register as ambience rather than
-        # compete with whatever is being said around it.
-        raw_gain = cfg.get(f"{key}gain_db", cfg.get("thinking_loop_gain_db", 0))
-        gain_db = float(raw_gain) if apply_gain else 0.0
-        # Only a single reused clip is worth caching; see _get_thinking_loop_pcm.
-        cacheable = sound_file == configured or not apply_gain
+        gain_db = float(cfg.get("thinking_loop_gain_db", 0))
         # Stop whatever is already looping before replacing the handle to it. _thinking_stop_event
         # holds ONE event, so starting a second loop without this orphans the first: it keeps
         # pushing frames with nothing able to stop it, and stop_thinking_loop() can only ever reach
@@ -261,7 +185,7 @@ class TTSProviderBase(ABC):
         self._thinking_stop_event = stop_event
         threading.Thread(
             target=self._thinking_loop_worker,
-            args=(sound_file, gain_db, cacheable, stop_event),
+            args=(sound_file, gain_db, stop_event),
             daemon=True,
         ).start()
 
@@ -271,9 +195,9 @@ class TTSProviderBase(ABC):
         if stop_event is not None:
             stop_event.set()
 
-    def _thinking_loop_worker(self, sound_file, gain_db, cacheable, stop_event):
+    def _thinking_loop_worker(self, sound_file, gain_db, stop_event):
         try:
-            pcm = self._get_thinking_loop_pcm(sound_file, gain_db, cacheable)
+            pcm = self._get_thinking_loop_pcm(sound_file, gain_db)
         except Exception as e:
             logger.bind(tag=TAG).warning(f"Thinking loop sound decode failed: {e}")
             return
