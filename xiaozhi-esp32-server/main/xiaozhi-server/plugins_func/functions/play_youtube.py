@@ -194,6 +194,19 @@ def _trim_mp3(path, start_sec):
         return path
 
 
+def _conn_closed(conn):
+    """True once the connection is gone, so playback stops with it.
+
+    Nothing else notices: every send in this module swallows its exception (a dead socket must not
+    take the loop down mid-song), the session id belongs to the connection object itself and so
+    stays "current" forever, and the queue tops itself up with related songs. An orphaned loop
+    therefore keeps waiting out songs and DOWNLOADING the next one into a socket nobody is reading
+    -- observed running for 2 hours and ~24 songs after the app closed the socket at 07:42, which is
+    also what a "stop" that arrives as a disconnect looks like."""
+    stop_event = getattr(conn, "stop_event", None)
+    return stop_event is not None and stop_event.is_set()
+
+
 async def _wait_song(conn, session, dur, song, seek=0, full_dur=None):
     """Wait out the song. [dur] is how long THIS audio actually runs (a resumed/seeked song is
     trimmed, so shorter than the track); [seek] is where in the track that audio starts and
@@ -204,7 +217,7 @@ async def _wait_song(conn, session, dur, song, seek=0, full_dur=None):
     while waited < dur:
         await asyncio.sleep(1)
         waited += 1
-        if getattr(conn, "_yt_session", None) != session:
+        if getattr(conn, "_yt_session", None) != session or _conn_closed(conn):
             return "stop", waited
         if getattr(conn, "_yt_skip", 0):
             conn._yt_skip = 0
@@ -230,7 +243,7 @@ async def _wait_qa_done(conn, session):
     abort_silence = 0
     for _ in range(300):
         await asyncio.sleep(1)
-        if getattr(conn, "_yt_session", None) != session:
+        if getattr(conn, "_yt_session", None) != session or _conn_closed(conn):
             return "stop"
         if getattr(conn, "_yt_skip", 0):
             conn._yt_skip = 0
@@ -280,7 +293,7 @@ async def _wait_paused(conn, session):
     a web page must not make the robot start listening. Returns 'stop'/'next'/'resume'."""
     for _ in range(3600):  # up to 1 hour paused before giving up
         await asyncio.sleep(1)
-        if getattr(conn, "_yt_session", None) != session:
+        if getattr(conn, "_yt_session", None) != session or _conn_closed(conn):
             return "stop"
         if getattr(conn, "_yt_skip", 0):
             conn._yt_skip = 0
@@ -384,7 +397,7 @@ async def _play_queue(conn, initial_queue, start_index=0, interrupt_current=Fals
         await _send_music(conn, "start")   # -> tells the R1 app to turn on the music LED
         await _push_queue(conn, playlist)
         while queue:
-            if getattr(conn, "_yt_session", None) != my_session:
+            if getattr(conn, "_yt_session", None) != my_session or _conn_closed(conn):
                 break
             if idx >= MAX_SONGS:   # reached MAX_SONGS -> stop (don't play forever)
                 logger.bind(tag=TAG).info(f"play_youtube: đủ {MAX_SONGS} bài -> dừng playlist")
@@ -442,7 +455,7 @@ async def _play_queue(conn, initial_queue, start_index=0, interrupt_current=Fals
             await _send_now_playing(conn, song, state="downloading")
 
             path = await asyncio.to_thread(_download, vid, cache_dir)
-            if getattr(conn, "_yt_session", None) != my_session:
+            if getattr(conn, "_yt_session", None) != my_session or _conn_closed(conn):
                 break
             if not path:
                 _say(conn, f"Bài {title} tải lỗi, tao bỏ qua nha.")
