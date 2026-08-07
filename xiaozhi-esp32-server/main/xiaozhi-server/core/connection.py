@@ -1417,6 +1417,7 @@ class ConnectionHandler:
 
     def clearSpeakStatus(self):
         self.client_is_speaking = False
+        self.calling = False
         self.logger.bind(tag=TAG).debug(f"Clear server speaking state")
 
     async def close(self, ws=None):

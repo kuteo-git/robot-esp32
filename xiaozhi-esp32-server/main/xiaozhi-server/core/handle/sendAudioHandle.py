@@ -96,6 +96,13 @@ async def sendAudioMessage(conn: "ConnectionHandler", sentenceType, audios, text
 
     # 发送结束消息（如果是最后一个文本）
     # 通话需要维持speaking状态
+    # BUGFIX: call_device() sets conn.calling=True but never resets it (calls end
+    # via an external Java relay, not through this server).  When a LAST sentence
+    # arrives with calling=True, the call has already ended — reset the stale flag
+    # so the stop message is sent and the speaker exits its "responding" state.
+    if conn.calling and sentenceType == SentenceType.LAST:
+        conn.logger.bind(tag=TAG).debug("Stale calling flag detected on LAST, resetting")
+        conn.calling = False
     if not conn.calling and sentenceType == SentenceType.LAST:
         # Chuông "tới lượt mày": phát cuối câu trả lời, ngay trước khi robot về lắng nghe.
         # Bỏ qua nếu sắp đóng phiên (đã có tiếng tạm biệt) hoặc kết nối text-only (Telegram).
