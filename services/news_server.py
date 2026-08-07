@@ -466,6 +466,7 @@ def _llm_payload(blocks):
         ],
         "temperature": 0.6,
         "stream": True,
+        "reasoning_effort": "none",
     }
 
 
@@ -554,6 +555,7 @@ def rewrite(blocks):
         ],
         "temperature": 0.6,
         "stream": True,
+        "reasoning_effort": "none",
     }
     t0 = time.perf_counter()
     log(f"LLM viết lại ({len(raw)} ký tự thô, model {LLM_MODEL})...")
