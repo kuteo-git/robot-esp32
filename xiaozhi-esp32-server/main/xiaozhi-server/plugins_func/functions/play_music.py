@@ -195,64 +195,68 @@ def _get_random_play_prompt(song_name):
 async def play_local_music(conn: "ConnectionHandler", specific_file=None):
     global MUSIC_CACHE
     """Play a local music file"""
-    try:
-        if not os.path.exists(MUSIC_CACHE["music_dir"]):
-            conn.logger.bind(tag=TAG).error(
-                f"音乐目录不存在: " + MUSIC_CACHE["music_dir"]
-            )
-            return
-
-        # Make sure the path is correct
-        if specific_file:
-            selected_music = specific_file
-            music_path = os.path.join(MUSIC_CACHE["music_dir"], specific_file)
-        else:
-            if not MUSIC_CACHE["music_files"]:
-                conn.logger.bind(tag=TAG).error("not found MP3 Music file")
+    async with conn.turn_guard(on_error="Phát nhạc bị lỗi rồi") as guard:
+        try:
+            if not os.path.exists(MUSIC_CACHE["music_dir"]):
+                conn.logger.bind(tag=TAG).error(
+                    f"音乐目录不存在: " + MUSIC_CACHE["music_dir"]
+                )
                 return
-            selected_music = random.choice(MUSIC_CACHE["music_files"])
-            music_path = os.path.join(MUSIC_CACHE["music_dir"], selected_music)
 
-        if not os.path.exists(music_path):
-            conn.logger.bind(tag=TAG).error(f"Selected music file does not exist: {music_path}")
-            return
-        text = _get_random_play_prompt(selected_music)
-        conn.tts.store_tts_text(conn.sentence_id, text)
-        # conn.dialogue.put(Message(role="assistant", content=text))
+            # Make sure the path is correct
+            if specific_file:
+                selected_music = specific_file
+                music_path = os.path.join(MUSIC_CACHE["music_dir"], specific_file)
+            else:
+                if not MUSIC_CACHE["music_files"]:
+                    conn.logger.bind(tag=TAG).error("not found MP3 Music file")
+                    return
+                selected_music = random.choice(MUSIC_CACHE["music_files"])
+                music_path = os.path.join(MUSIC_CACHE["music_dir"], selected_music)
 
-        if conn.intent_type == "intent_llm":
+            if not os.path.exists(music_path):
+                conn.logger.bind(tag=TAG).error(f"Selected music file does not exist: {music_path}")
+                return
+            text = _get_random_play_prompt(selected_music)
+            conn.tts.store_tts_text(conn.sentence_id, text)
+            # conn.dialogue.put(Message(role="assistant", content=text))
+
+            if conn.intent_type == "intent_llm":
+                conn.tts.tts_text_queue.put(
+                    TTSMessageDTO(
+                        sentence_id=conn.sentence_id,
+                        sentence_type=SentenceType.FIRST,
+                        content_type=ContentType.ACTION,
+                    )
+                )
+                guard.opened()
             conn.tts.tts_text_queue.put(
                 TTSMessageDTO(
                     sentence_id=conn.sentence_id,
-                    sentence_type=SentenceType.FIRST,
-                    content_type=ContentType.ACTION,
+                    sentence_type=SentenceType.MIDDLE,
+                    content_type=ContentType.TEXT,
+                    content_detail=text,
                 )
             )
-        conn.tts.tts_text_queue.put(
-            TTSMessageDTO(
-                sentence_id=conn.sentence_id,
-                sentence_type=SentenceType.MIDDLE,
-                content_type=ContentType.TEXT,
-                content_detail=text,
-            )
-        )
-        conn.tts.tts_text_queue.put(
-            TTSMessageDTO(
-                sentence_id=conn.sentence_id,
-                sentence_type=SentenceType.MIDDLE,
-                content_type=ContentType.FILE,
-                content_file=music_path,
-            )
-        )
-        if conn.intent_type == "intent_llm":
             conn.tts.tts_text_queue.put(
                 TTSMessageDTO(
                     sentence_id=conn.sentence_id,
-                    sentence_type=SentenceType.LAST,
-                    content_type=ContentType.ACTION,
+                    sentence_type=SentenceType.MIDDLE,
+                    content_type=ContentType.FILE,
+                    content_file=music_path,
                 )
             )
+            if conn.intent_type == "intent_llm":
+                conn.tts.tts_text_queue.put(
+                    TTSMessageDTO(
+                        sentence_id=conn.sentence_id,
+                        sentence_type=SentenceType.LAST,
+                        content_type=ContentType.ACTION,
+                    )
+                )
+                guard.closed()
 
-    except Exception as e:
-        conn.logger.bind(tag=TAG).error(f"Failed to play music: {str(e)}")
-        conn.logger.bind(tag=TAG).error(f"Detailed error: {traceback.format_exc()}")
+        except Exception as e:
+            conn.logger.bind(tag=TAG).error(f"Failed to play music: {str(e)}")
+            conn.logger.bind(tag=TAG).error(f"Detailed error: {traceback.format_exc()}")
+            raise

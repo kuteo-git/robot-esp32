@@ -138,7 +138,15 @@ def play_youtube(conn: "ConnectionHandler", query: str):
     try:
         if not conn.loop.is_running():
             return ActionResponse(action=Action.RESPONSE, response="Hệ thống đang bận, lát thử lại nha")
-        conn.loop.create_task(_play(conn, query))
+        task = conn.loop.create_task(_play(conn, query))
+
+        def _log_done(f):
+            try:
+                f.result()
+            except Exception as e:
+                conn.logger.bind(tag=TAG).error(f"play_youtube: {e}")
+
+        task.add_done_callback(_log_done)
         return ActionResponse(action=Action.RECORD, result="ok", response="Để tao tìm bài đó nha")
     except Exception as e:
         logger.bind(tag=TAG).error(f"play_youtube error: {e}")
@@ -345,200 +353,207 @@ async def _play_queue(conn, initial_queue, start_index=0, interrupt_current=Fals
     play/wait/interrupt/pause handling. Shared by the voice-triggered search path (play_youtube)
     and the web-triggered caller-supplied-list path (play_media_queue)."""
     my_session = time.time()
-    try:
-        had_session = bool(getattr(conn, "_yt_session", None))
-        # Claim the session BEFORE clearing below, so the outgoing session's post-download guard
-        # (`_yt_session != my_session -> break`) stops it re-queueing audio after we flush.
-        conn._yt_session = my_session
-        conn._yt_skip = 0
-        conn._yt_web_paused = False
-        if interrupt_current and had_session:
-            # Taking over from a playlist that is already sounding. Reassigning the session only
-            # stops the old loop at its next 1s tick -- it does NOT stop audio already queued and
-            # buffered on the device, so the previous song keeps playing and the new one waits
-            # behind it. A VOICE takeover gets this for free (the wake word sends an abort ->
-            # handleAbortMessage clears the queue); a web tap sends no abort, so do it here. Same
-            # two steps the "skip" branch below relies on.
-            logger.bind(tag=TAG).info("play_youtube: taking over an active session -> flush queued audio")
-            await _interrupt_device_audio(conn)
-        # A web-triggered play never goes through startToChat (the only path that clears this), so a
-        # leftover abort from an earlier barge-in would silently drop EVERY audio packet in
-        # sendAudioHandle -- the song downloads and reports "playing" while nothing comes out of the
-        # speaker. Starting a playlist is explicit user intent: the previous turn is over.
-        conn.client_abort = False
-        cache_dir = _pytube_cache_dir(conn)
+    async with conn.turn_guard() as guard:
+        try:
+            had_session = bool(getattr(conn, "_yt_session", None))
+            # Claim the session BEFORE clearing below, so the outgoing session's post-download guard
+            # (`_yt_session != my_session -> break`) stops it re-queueing audio after we flush.
+            conn._yt_session = my_session
+            conn._yt_skip = 0
+            conn._yt_web_paused = False
+            if interrupt_current and had_session:
+                # Taking over from a playlist that is already sounding. Reassigning the session only
+                # stops the old loop at its next 1s tick -- it does NOT stop audio already queued and
+                # buffered on the device, so the previous song keeps playing and the new one waits
+                # behind it. A VOICE takeover gets this for free (the wake word sends an abort ->
+                # handleAbortMessage clears the queue); a web tap sends no abort, so do it here. Same
+                # two steps the "skip" branch below relies on.
+                logger.bind(tag=TAG).info("play_youtube: taking over an active session -> flush queued audio")
+                await _interrupt_device_audio(conn)
+            # A web-triggered play never goes through startToChat (the only path that clears this), so a
+            # leftover abort from an earlier barge-in would silently drop EVERY audio packet in
+            # sendAudioHandle -- the song downloads and reports "playing" while nothing comes out of the
+            # speaker. Starting a playlist is explicit user intent: the previous turn is over.
+            conn.client_abort = False
+            cache_dir = _pytube_cache_dir(conn)
 
-        # `playlist` is what the panel DISPLAYS -- the full list, which never shrinks as songs are
-        # consumed, so tapping the 3rd song doesn't make the first two disappear from the list.
-        # `queue` is the working list actually played from, starting at the song that was tapped.
-        playlist = list(initial_queue)
-        if not 0 <= start_index < len(playlist):
-            start_index = 0
-        queue = playlist[start_index:]
-        played = set()
-        intent_llm = conn.intent_type == "intent_llm"
-        turn_open = False
+            # `playlist` is what the panel DISPLAYS -- the full list, which never shrinks as songs are
+            # consumed, so tapping the 3rd song doesn't make the first two disappear from the list.
+            # `queue` is the working list actually played from, starting at the song that was tapped.
+            playlist = list(initial_queue)
+            if not 0 <= start_index < len(playlist):
+                start_index = 0
+            queue = playlist[start_index:]
+            played = set()
+            intent_llm = conn.intent_type == "intent_llm"
+            turn_open = False
 
-        def _open_turn():
-            if intent_llm:
-                conn.tts.tts_text_queue.put(
-                    TTSMessageDTO(sentence_id=conn.sentence_id, sentence_type=SentenceType.FIRST, content_type=ContentType.ACTION)
-                )
+            def _open_turn():
+                if intent_llm:
+                    conn.tts.tts_text_queue.put(
+                        TTSMessageDTO(sentence_id=conn.sentence_id, sentence_type=SentenceType.FIRST, content_type=ContentType.ACTION)
+                    )
+                    guard.opened()
 
-        def _close_turn():
-            if intent_llm:
-                conn.tts.tts_text_queue.put(
-                    TTSMessageDTO(sentence_id=conn.sentence_id, sentence_type=SentenceType.LAST, content_type=ContentType.ACTION)
-                )
+            def _close_turn():
+                if intent_llm:
+                    conn.tts.tts_text_queue.put(
+                        TTSMessageDTO(sentence_id=conn.sentence_id, sentence_type=SentenceType.LAST, content_type=ContentType.ACTION)
+                    )
+                    guard.closed()
 
-        idx = 0
-        first_turn = True
-        resume = False  # True = replay the current song (after the user interrupted to ask something)
-        await _send_music(conn, "start")   # -> tells the R1 app to turn on the music LED
-        await _push_queue(conn, playlist)
-        while queue:
-            if getattr(conn, "_yt_session", None) != my_session or _conn_closed(conn):
-                break
-            if idx >= MAX_SONGS:   # reached MAX_SONGS -> stop (don't play forever)
-                logger.bind(tag=TAG).info(f"play_youtube: đủ {MAX_SONGS} bài -> dừng playlist")
-                break
-            song = queue.pop(0)
-            vid = song.get("video_id")
-            if not resume:
-                if not vid or vid in played:
+            idx = 0
+            first_turn = True
+            resume = False  # True = replay the current song (after the user interrupted to ask something)
+            await _send_music(conn, "start")   # -> tells the R1 app to turn on the music LED
+            await _push_queue(conn, playlist)
+            while queue:
+                if getattr(conn, "_yt_session", None) != my_session or _conn_closed(conn):
+                    break
+                if idx >= MAX_SONGS:   # reached MAX_SONGS -> stop (don't play forever)
+                    logger.bind(tag=TAG).info(f"play_youtube: đủ {MAX_SONGS} bài -> dừng playlist")
+                    break
+                song = queue.pop(0)
+                vid = song.get("video_id")
+                if not resume:
+                    if not vid or vid in played:
+                        continue
+                    played.add(vid)
+                    # Top up when the queue is about to run dry -> plays UNLIMITED (a chain of related songs).
+                    if len(queue) < 2:
+                        # Exclude everything already on the playlist too, not just the unplayed queue,
+                        # so a top-up can't re-add a song the user can still see further up the list.
+                        have = (played | {q.get("video_id") for q in queue}
+                                | {p.get("video_id") for p in playlist})
+                        for r in await asyncio.to_thread(_related, vid, RELATED_COUNT):
+                            if r.get("video_id") and r.get("video_id") not in have:
+                                queue.append(r)
+                                playlist.append(r)
+                        await _push_queue(conn, playlist)
+
+                title = song.get("title") or vid or ""
+                artist = song.get("artist", "")
+
+                # Open a turn if not already open (start of the playlist OR after being interrupted). After
+                # being interrupted, do NOT create a new sentence_id (the old id already had LAST -> the
+                # device would ignore a FIRST with a duplicate id).
+                if not turn_open:
+                    if not first_turn:
+                        # Do NOT create a new sentence_id (races with the stream that just finished answering
+                        # -> FIRST gets dropped -> audio tagged with the old sid -> sendAudioMessage drops it).
+                        # Just reuse the current conn.sentence_id for consistency.
+                        conn.client_abort = False  # resume = a fresh play -> clear the abort flag, otherwise the pipeline drops it
+                    first_turn = False
+                    _open_turn()
+                    turn_open = True
+
+                # Announce "loading" BEFORE downloading (the trailing period -> synth + play RIGHT AWAY, no wait for the download).
+                # A scrub re-enters this loop for the SAME song and must stay silent: announcing every
+                # drag of the seek bar would talk over the music constantly.
+                if song.get("_silent"):
+                    announce = None
+                elif resume:
+                    announce = f"Phát tiếp bài {title} nha."
+                elif idx == 0:
+                    announce = f"Đang tải bài {title}" + (f" của {artist}" if artist else "") + "."
+                else:
+                    announce = f"Tiếp theo nha, đang tải bài {title}."
+                resume = False
+                if announce:
+                    conn.tts.store_tts_text(conn.sentence_id, announce)
+                    _say(conn, announce)
+                    logger.bind(tag=TAG).info(f"play_youtube: {announce}")
+                await _send_now_playing(conn, song, state="downloading")
+
+                path = await asyncio.to_thread(_download, vid, cache_dir)
+                if getattr(conn, "_yt_session", None) != my_session or _conn_closed(conn):
+                    break
+                if not path:
+                    _say(conn, f"Bài {title} tải lỗi, tao bỏ qua nha.")
                     continue
-                played.add(vid)
-                # Top up when the queue is about to run dry -> plays UNLIMITED (a chain of related songs).
-                if len(queue) < 2:
-                    # Exclude everything already on the playlist too, not just the unplayed queue,
-                    # so a top-up can't re-add a song the user can still see further up the list.
-                    have = (played | {q.get("video_id") for q in queue}
-                            | {p.get("video_id") for p in playlist})
-                    for r in await asyncio.to_thread(_related, vid, RELATED_COUNT):
-                        if r.get("video_id") and r.get("video_id") not in have:
-                            queue.append(r)
-                            playlist.append(r)
-                    await _push_queue(conn, playlist)
 
-            title = song.get("title") or vid or ""
-            artist = song.get("artist", "")
-
-            # Open a turn if not already open (start of the playlist OR after being interrupted). After
-            # being interrupted, do NOT create a new sentence_id (the old id already had LAST -> the
-            # device would ignore a FIRST with a duplicate id).
-            if not turn_open:
-                if not first_turn:
-                    # Do NOT create a new sentence_id (races with the stream that just finished answering
-                    # -> FIRST gets dropped -> audio tagged with the old sid -> sendAudioMessage drops it).
-                    # Just reuse the current conn.sentence_id for consistency.
-                    conn.client_abort = False  # resume = a fresh play -> clear the abort flag, otherwise the pipeline drops it
-                first_turn = False
-                _open_turn()
-                turn_open = True
-
-            # Announce "loading" BEFORE downloading (the trailing period -> synth + play RIGHT AWAY, no wait for the download).
-            # A scrub re-enters this loop for the SAME song and must stay silent: announcing every
-            # drag of the seek bar would talk over the music constantly.
-            if song.get("_silent"):
-                announce = None
-            elif resume:
-                announce = f"Phát tiếp bài {title} nha."
-            elif idx == 0:
-                announce = f"Đang tải bài {title}" + (f" của {artist}" if artist else "") + "."
-            else:
-                announce = f"Tiếp theo nha, đang tải bài {title}."
-            resume = False
-            if announce:
-                conn.tts.store_tts_text(conn.sentence_id, announce)
-                _say(conn, announce)
-                logger.bind(tag=TAG).info(f"play_youtube: {announce}")
-            await _send_now_playing(conn, song, state="downloading")
-
-            path = await asyncio.to_thread(_download, vid, cache_dir)
-            if getattr(conn, "_yt_session", None) != my_session or _conn_closed(conn):
-                break
-            if not path:
-                _say(conn, f"Bài {title} tải lỗi, tao bỏ qua nha.")
-                continue
-
-            seek = song.get("_seek", 0)
-            # Measure the WHOLE track from the untrimmed file: a trimmed mp3 copied with `-c copy`
-            # can keep the original Xing header, so probing the trimmed file can report the full
-            # length back and inflate every total.
-            full_dur = _mp3_duration(path) or _parse_dur(song.get("duration")) or DEFAULT_DUR
-            play_path = await asyncio.to_thread(_trim_mp3, path, seek) if seek > 0 else path
-            if seek > 0 and play_path == path:
-                # _trim_mp3 fell back to the original (e.g. ffmpeg can't decode a corrupt cache
-                # file): the audio really does start at 0, so don't claim we resumed mid-song --
-                # that would show a wrong position and wait for time that never plays.
-                logger.bind(tag=TAG).warning(f"play_youtube: trim to {seek}s failed -> playing from the start")
-                seek = 0
-            _queue_file(conn, play_path)  # download done -> auto-plays (from second 'seek' if this is a resume)
-            idx += 1
-            play_dur = max(1, full_dur - seek)  # how much audio actually remains to be played
-            await _send_now_playing(conn, song, state="playing", duration_s=full_dur, position_s=seek)
-            result, waited = await _wait_song(conn, my_session, play_dur, song, seek, full_dur)
-            if result == "stop":
-                break
-            if result == "skip":
-                # "skip" via the tool has NO client_abort like a barge-in does -> the R1 keeps playing the
-                # old song's already-buffered audio. Interrupt manually: clear the queue (stop feeding the
-                # old song's audio frames) + tell the device to stop playing. The next song gets announced
-                # + queued right after (reusing the current turn) -> plays over the old one. Do NOT
-                # close/open a turn here (changing sentence_id here tends to make the device drop FIRST
-                # -> losing the next song's audio).
-                await _interrupt_device_audio(conn)
-            if result == "seek":
-                # Panel scrubbed: replay this same song from the new spot, silently.
-                target = getattr(conn, "_yt_seek_to", None) or 0
-                conn._yt_seek_to = None
-                await _interrupt_device_audio(conn)  # else pre-seek audio plays over the new position
-                queue.insert(0, dict(song, _seek=max(0, int(target)), _silent=True))
-                resume = True
-            if result == "paused":
-                # Web UI paused (not a spoken interruption) -> wait for resume/next/stop without ever
-                # entering the "listening for a question" flow _wait_qa_done drives. Marking the
-                # session paused only stops this loop -- the audio already queued/buffered on the
-                # device plays on -- so flush it, exactly like skip/takeover do.
-                pos = max(0, seek + waited)
-                await _interrupt_device_audio(conn)
-                await _send_now_playing(conn, song, state="paused", duration_s=full_dur, position_s=pos)
-                cont = await _wait_paused(conn, my_session)
-                if cont == "stop":
+                seek = song.get("_seek", 0)
+                # Measure the WHOLE track from the untrimmed file: a trimmed mp3 copied with `-c copy`
+                # can keep the original Xing header, so probing the trimmed file can report the full
+                # length back and inflate every total.
+                full_dur = _mp3_duration(path) or _parse_dur(song.get("duration")) or DEFAULT_DUR
+                play_path = await asyncio.to_thread(_trim_mp3, path, seek) if seek > 0 else path
+                if seek > 0 and play_path == path:
+                    # _trim_mp3 fell back to the original (e.g. ffmpeg can't decode a corrupt cache
+                    # file): the audio really does start at 0, so don't claim we resumed mid-song --
+                    # that would show a wrong position and wait for time that never plays.
+                    logger.bind(tag=TAG).warning(f"play_youtube: trim to {seek}s failed -> playing from the start")
+                    seek = 0
+                _queue_file(conn, play_path)  # download done -> auto-plays (from second 'seek' if this is a resume)
+                idx += 1
+                play_dur = max(1, full_dur - seek)  # how much audio actually remains to be played
+                await _send_now_playing(conn, song, state="playing", duration_s=full_dur, position_s=seek)
+                result, waited = await _wait_song(conn, my_session, play_dur, song, seek, full_dur)
+                if result == "stop":
                     break
-                if cont == "resume":
-                    target = getattr(conn, "_yt_seek_to", None)
-                    if target is not None:      # scrubbed while paused -> resume from there instead
-                        conn._yt_seek_to = None
-                        pos = max(0, int(target))
-                    queue.insert(0, dict(song, _seek=pos))
+                if result == "skip":
+                    # "skip" via the tool has NO client_abort like a barge-in does -> the R1 keeps playing the
+                    # old song's already-buffered audio. Interrupt manually: clear the queue (stop feeding the
+                    # old song's audio frames) + tell the device to stop playing. The next song gets announced
+                    # + queued right after (reusing the current turn) -> plays over the old one. Do NOT
+                    # close/open a turn here (changing sentence_id here tends to make the device drop FIRST
+                    # -> losing the next song's audio).
+                    await _interrupt_device_audio(conn)
+                if result == "seek":
+                    # Panel scrubbed: replay this same song from the new spot, silently.
+                    target = getattr(conn, "_yt_seek_to", None) or 0
+                    conn._yt_seek_to = None
+                    await _interrupt_device_audio(conn)  # else pre-seek audio plays over the new position
+                    queue.insert(0, dict(song, _seek=max(0, int(target)), _silent=True))
                     resume = True
-                # cont == "next" -> move to the next song (loop continues; a new turn is already open)
-            if result == "interrupt":
-                # User interrupted the music to ask/say something -> the abort already closed the music turn (sentence_id will change).
-                turn_open = False
-                cont = await _wait_qa_done(conn, my_session)
-                if cont == "stop":
-                    break
-                if cont == "resume":
-                    pos = max(0, seek + waited - 5)  # resume at the EXACT spot (minus 5s to offset announce/buffer delay)
-                    queue.insert(0, dict(song, _seek=pos))
-                    resume = True
-                # cont == "next" -> move to the next song (a new turn opens on the next loop)
+                if result == "paused":
+                    # Web UI paused (not a spoken interruption) -> wait for resume/next/stop without ever
+                    # entering the "listening for a question" flow _wait_qa_done drives. Marking the
+                    # session paused only stops this loop -- the audio already queued/buffered on the
+                    # device plays on -- so flush it, exactly like skip/takeover do.
+                    pos = max(0, seek + waited)
+                    await _interrupt_device_audio(conn)
+                    await _send_now_playing(conn, song, state="paused", duration_s=full_dur, position_s=pos)
+                    cont = await _wait_paused(conn, my_session)
+                    if cont == "stop":
+                        break
+                    if cont == "resume":
+                        target = getattr(conn, "_yt_seek_to", None)
+                        if target is not None:      # scrubbed while paused -> resume from there instead
+                            conn._yt_seek_to = None
+                            pos = max(0, int(target))
+                        queue.insert(0, dict(song, _seek=pos))
+                        resume = True
+                    # cont == "next" -> move to the next song (loop continues; a new turn is already open)
+                if result == "interrupt":
+                    # User interrupted the music to ask/say something -> the abort already closed the music turn
+                    # (sentence_id will change) -- tell the guard too, so an exception while no turn is open
+                    # (waiting on _wait_qa_done) doesn't try to close a turn that isn't ours anymore.
+                    turn_open = False
+                    guard.closed()
+                    cont = await _wait_qa_done(conn, my_session)
+                    if cont == "stop":
+                        break
+                    if cont == "resume":
+                        pos = max(0, seek + waited - 5)  # resume at the EXACT spot (minus 5s to offset announce/buffer delay)
+                        queue.insert(0, dict(song, _seek=pos))
+                        resume = True
+                    # cont == "next" -> move to the next song (a new turn opens on the next loop)
 
-        # Close out the playback turn.
-        if turn_open and getattr(conn, "_yt_session", None) == my_session:
-            _close_turn()
-    except Exception as e:
-        logger.bind(tag=TAG).error(f"_play_queue: {e}")
-    finally:
-        # Turn off the music LED when this playlist stops (ran out of songs / "stop the music"). Do NOT
-        # turn it off if a NEW music command has already taken over the session (that session turns its
-        # own LED on) -> avoids turning it off by mistake.
-        cur = getattr(conn, "_yt_session", None)
-        if cur is None or cur == my_session:
-            await _send_music(conn, "stop")
-            await _send_now_playing(conn, None, state="stopped")
+            # Close out the playback turn.
+            if turn_open and getattr(conn, "_yt_session", None) == my_session:
+                _close_turn()
+        except Exception as e:
+            logger.bind(tag=TAG).error(f"_play_queue: {e}")
+            raise
+        finally:
+            # Turn off the music LED when this playlist stops (ran out of songs / "stop the music"). Do NOT
+            # turn it off if a NEW music command has already taken over the session (that session turns its
+            # own LED on) -> avoids turning it off by mistake.
+            cur = getattr(conn, "_yt_session", None)
+            if cur is None or cur == my_session:
+                await _send_music(conn, "stop")
+                await _send_now_playing(conn, None, state="stopped")
 
 
 async def _play(conn, query):

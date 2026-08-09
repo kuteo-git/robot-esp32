@@ -7,6 +7,7 @@ import uuid
 import time
 import queue
 import asyncio
+import contextlib
 import threading
 import traceback
 import subprocess
@@ -1419,6 +1420,98 @@ class ConnectionHandler:
         self.client_is_speaking = False
         self.calling = False
         self.logger.bind(tag=TAG).debug(f"Clear server speaking state")
+
+    @contextlib.asynccontextmanager
+    async def turn_guard(self, sentence_id=None, on_error=None):
+        """Guarantee a turn opened via a plugin's own manual FIRST is always closed with
+        LAST, even if the wrapped code raises. Use as:
+
+            async with conn.turn_guard() as guard:
+                ...enqueue FIRST...
+                guard.opened()
+                ...code that can raise...
+                ...enqueue LAST...
+                guard.closed()
+
+        Normal exit: no-op (caller already closed its own turn).
+        Exception: if opened() was called but closed() wasn't, enqueues a LAST (preceded
+        by an on_error spoken message if given) for the turn's sentence_id, then re-raises.
+        If opened() was never called, falls back to clearSpeakStatus() as a pure safety net
+        (no turn was opened here, so there's nothing to close with LAST).
+
+        A caller may open/close several turns in sequence within one guarded block (e.g. a
+        playlist loop opening a fresh turn per song) -- opened() re-captures the *current*
+        conn.sentence_id each time it's called (unless a fixed sentence_id was passed to
+        turn_guard() itself), so an exception mid-loop closes whichever turn is actually open.
+        """
+        state = {"opened": False, "closed": False, "sid": sentence_id or self.sentence_id}
+
+        class _Guard:
+            def opened(self_, sid=None):
+                state["opened"] = True
+                state["closed"] = False
+                if sentence_id is None:
+                    state["sid"] = sid or self.sentence_id
+
+            def closed(self_):
+                state["closed"] = True
+
+        g = _Guard()
+        try:
+            yield g
+        except Exception:
+            if state["opened"] and not state["closed"]:
+                sid = state["sid"]
+                try:
+                    if on_error:
+                        self.tts.store_tts_text(sid, on_error)
+                        self.tts.tts_text_queue.put(
+                            TTSMessageDTO(
+                                sentence_id=sid,
+                                sentence_type=SentenceType.MIDDLE,
+                                content_type=ContentType.TEXT,
+                                content_detail=on_error,
+                            )
+                        )
+                    self.tts.tts_text_queue.put(
+                        TTSMessageDTO(
+                            sentence_id=sid,
+                            sentence_type=SentenceType.LAST,
+                            content_type=ContentType.ACTION,
+                        )
+                    )
+                except Exception:
+                    self.clearSpeakStatus()
+            elif not state["opened"]:
+                self.clearSpeakStatus()
+            raise
+
+    def close_turn_if_open(self, sentence_id, opened, on_error=None):
+        """Sync counterpart to turn_guard, for code running on a worker thread
+        (queue.Queue.put is thread-safe; mirrors how _stream_bulletin already used it).
+        No-op if opened is False."""
+        if not opened:
+            return
+        try:
+            if on_error:
+                self.tts.store_tts_text(sentence_id, on_error)
+                self.tts.tts_text_queue.put(
+                    TTSMessageDTO(
+                        sentence_id=sentence_id,
+                        sentence_type=SentenceType.MIDDLE,
+                        content_type=ContentType.TEXT,
+                        content_detail=on_error,
+                    )
+                )
+            self.tts.tts_text_queue.put(
+                TTSMessageDTO(
+                    sentence_id=sentence_id,
+                    sentence_type=SentenceType.LAST,
+                    content_type=ContentType.ACTION,
+                )
+            )
+        except Exception:
+            self.clearSpeakStatus()
 
     async def close(self, ws=None):
         """资源清理方法"""

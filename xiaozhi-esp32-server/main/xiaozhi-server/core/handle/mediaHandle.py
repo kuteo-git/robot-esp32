@@ -16,7 +16,15 @@ async def handle_media_play(conn: "ConnectionHandler", songs: list, start_index:
     and the untapped songs above it stay on screen instead of vanishing."""
     if not songs or not conn.loop.is_running():
         return
-    conn.loop.create_task(play_media_queue(conn, songs, start_index))
+    task = conn.loop.create_task(play_media_queue(conn, songs, start_index))
+
+    def _log_done(f):
+        try:
+            f.result()
+        except Exception as e:
+            conn.logger.bind(tag=TAG).error(f"play_media_queue: {e}")
+
+    task.add_done_callback(_log_done)
 
 
 def handle_media_next(conn: "ConnectionHandler"):

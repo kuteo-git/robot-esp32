@@ -84,13 +84,18 @@ def _stream_bulletin(conn, categories, voice):
     LAST. The turn is opened on the meta event rather than the first sentence, so the sting starts
     playing while the model is still writing.
 
+    conn.sentence_id is only repointed to this turn's id at the moment the turn actually opens
+    (FIRST sent), not eagerly at the top -- if the request fails before that (service down,
+    connect error), conn.sentence_id is left untouched, so the outer chat()-level turn (opened by
+    connection.py's chat() before this plugin ever ran) still matches and closes itself normally
+    instead of being orphaned by a sentence_id it no longer recognizes.
+
     Runs on a worker thread (blocking HTTP), pushing into the thread-safe tts_text_queue. Returns
-    the number of sentences spoken so the caller can tell "failed before saying anything", which
-    deserves a spoken apology, from "failed midway", which does not -- the listener already heard
-    most of a bulletin and only needs the turn closed.
+    (spoken, started) so the caller can tell "failed before saying anything", which deserves a
+    spoken apology, from "failed midway", which does not -- the listener already heard most of a
+    bulletin and only needs the turn closed (already done here via the finally below).
     """
     sentence_id = uuid.uuid4().hex
-    conn.sentence_id = sentence_id
     q = conn.tts.tts_text_queue
 
     def put(stype, ctype, **kw):
@@ -126,6 +131,7 @@ def _stream_bulletin(conn, categories, voice):
             if (meta := evt.get("meta")) is not None:
                 end_wav = meta.get("end_wav")
                 gap_wav = meta.get("gap_wav")
+                conn.sentence_id = sentence_id
                 put(SentenceType.FIRST, ContentType.ACTION, voice=voice or None)
                 started = True
                 start_wav = meta.get("start_wav")
@@ -133,6 +139,7 @@ def _stream_bulletin(conn, categories, voice):
                     put(SentenceType.MIDDLE, ContentType.FILE, content_file=start_wav)
             elif (text := evt.get("text")):
                 if not started:   # sentence before meta should not happen; open the turn anyway
+                    conn.sentence_id = sentence_id
                     put(SentenceType.FIRST, ContentType.ACTION, voice=voice or None)
                     started = True
                 conn.tts.store_tts_text(sentence_id, text)
@@ -157,8 +164,8 @@ def _stream_bulletin(conn, categories, voice):
         if started:
             if spoken and not conn.client_abort and end_wav and os.path.exists(end_wav):
                 put(SentenceType.MIDDLE, ContentType.FILE, content_file=end_wav)
-            put(SentenceType.LAST, ContentType.ACTION)
-    return spoken
+        conn.close_turn_if_open(sentence_id, started)
+    return spoken, started
 
 
 async def _run(conn, spoken_filler=True):
@@ -191,19 +198,30 @@ async def _run(conn, spoken_filler=True):
         except Exception as e:
             logger.bind(tag=TAG).warning(f"news bulletin: không bật được tiếng chờ: {e}")
 
-        spoken = await asyncio.to_thread(_stream_bulletin, conn, categories, voice)
-        if not spoken:
-            # Nothing was ever said, so the listener is owed an explanation. A failure PARTWAY
-            # through is not this case: they heard most of a bulletin, and the turn was already
-            # closed cleanly, so apologising after the fact would be the odd thing to do.
+        spoken, started = await asyncio.to_thread(_stream_bulletin, conn, categories, voice)
+        if not started:
+            # The turn in _stream_bulletin never opened (request failed before the service's
+            # `meta` event, or returned nothing) -- conn.sentence_id was never repointed there,
+            # so IF this ran as an LLM tool call, the outer chat()-level turn on that same id
+            # closes itself normally. But check_direct_news (typed/scheduled "đọc bản tin",
+            # bypassing the LLM entirely) never opens a chat() turn at all -- there is no outer
+            # closer in that path, so the apology below would otherwise never get a LAST and the
+            # client would stay stuck "responding" forever. client_is_speaking still being True
+            # after _say() is the signal that nothing has closed this turn yet; force it closed.
             logger.bind(tag=TAG).error("news bulletin: không đọc được câu nào")
             conn.tts.stop_thinking_loop()
             _say(conn, "Tao soạn bản tin không được, lát thử lại nghen.")
+            if conn.client_is_speaking:
+                conn.close_turn_if_open(conn.sentence_id, True)
+        # else: a failure PARTWAY through already got its own turn opened+closed cleanly inside
+        # _stream_bulletin's finally -- the listener heard most of a bulletin, nothing more to say.
     except Exception as e:
         logger.bind(tag=TAG).error(f"news bulletin lỗi: {e}")
         try:
             conn.tts.stop_thinking_loop()   # else it would keep looping with nothing coming
             _say(conn, "Tao soạn bản tin không được, lát thử lại nghen.")
+            if conn.client_is_speaking:
+                conn.close_turn_if_open(conn.sentence_id, True)
         except Exception:
             pass
 
