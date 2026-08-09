@@ -370,6 +370,17 @@ def _prompt(period, datestr):
         "cover the same topic or the same product; report each from its own angle. The section "
         "header carries its story count (e.g. 'Tin công nghệ — 5 tin'): that count is mandatory, "
         "but it is there for you to check yourself against — NEVER say the number out loud.\n"
+        "DUPLICATE CHECK: this is different from the rule above. Before you write, scan every "
+        "numbered line in ALL sections (within one section AND across different sections) for "
+        "cases where two lines report the EXACT SAME underlying news item — same event, same "
+        "facts, same figures, just fetched from two different sources or feeds. When you find a "
+        "true duplicate like that, write it only ONCE — in whichever section it fits best, using "
+        "whichever version has more real detail — and silently drop the repeat; do not mention "
+        "that anything was skipped. This does NOT apply to two DISTINCT stories that merely share "
+        "a topic, a product, or an ongoing situation (e.g. two different reviews of the same "
+        "phone, two separate developments in the same case) — those are different news and both "
+        "must still be read in full, per the rule above. Only collapse a line when it is clearly "
+        "the SAME specific piece of news restated, not just a related one.\n"
         # Enforcing the per-story count made the model announce ordinals ("Thứ nhất, ... Thứ hai,
         # ...") -- it read the numbering in the raw data as something to speak. The numbering is
         # bookkeeping for the model, never for the listener.
