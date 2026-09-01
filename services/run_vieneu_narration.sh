@@ -4,7 +4,7 @@
 cd "$(dirname "$0")"
 source .venv/bin/activate
 export VIENEU_MODE=v3turbo
-export VIENEU_VOICE="Minh Đức"                     # default voice when a request doesn't specify one
+export VIENEU_VOICE="Lê Yến"                       # default voice when a request doesn't specify one. Cloned -- enrolled at boot from services/models/voice-refs/
 export VIENEU_PORT=8004                            # separate port from the robot's service (8002)
 export VIENEU_BOOST_DB=3.5
 export VIENEU_PITCH=1.0

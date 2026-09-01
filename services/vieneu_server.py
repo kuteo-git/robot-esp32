@@ -18,6 +18,7 @@ import unicodedata
 import json
 import wave
 import tempfile
+from pathlib import Path
 import numpy as np
 from datetime import datetime
 from fastapi import FastAPI, Request
@@ -30,9 +31,17 @@ from _logsetup import make_logger, install_request_logging
 
 log = make_logger("vieneu")
 
-VOICE = os.environ.get("VIENEU_VOICE", "Thùy Dung")  # "Doan" until 2026-09-01: a v2-era name absent from the v3.3.0 roster, so the bare default silently fell back
+VOICE = os.environ.get("VIENEU_VOICE", "Lê Yến")  # a cloned voice from VOICE_REFS_DIR below; falls back per _resolve_voice if that directory is empty
 PORT = int(os.environ.get("VIENEU_PORT", "8002"))
 MODE = os.environ.get("VIENEU_MODE", "v3turbo")
+# Directory of custom cloned-voice references. Every *.wav in it is enrolled at startup and
+# the FILENAME (minus .wav) becomes the voice name. Zero-shot: VieNeu extracts a fixed-size
+# speaker embedding, so a 3-8s clip is the whole budget -- see the README in that directory.
+# Enrolling from the wav on every boot (~5s each) rather than persisting embeddings keeps the
+# source of truth a file you can actually listen to, and survives reinstalling the package
+# (tts.save_voices() defaults to writing INSIDE site-packages, which pip wipes).
+VOICE_REFS_DIR = Path(os.environ.get(
+    "VIENEU_VOICE_REFS_DIR", Path(__file__).resolve().parent / "models" / "voice-refs"))
 # v3turbo speaking-style tokens (see configuration_v3_turbo.py's style_labels). The upstream
 # v3turbo engine resolves all three. Callers that don't care about style just omit the field.
 STYLE_LABELS = {"natural": "tu_nhien", "storytelling": "doc_truyen", "news": "tin_tuc"}
@@ -213,6 +222,27 @@ def _resolve_voice(name):
     log(f"fallback '{FALLBACK_VOICE}' cũng KHÔNG có -> dùng default gói", level="WARNING")
     return tts.get_preset_voice()
 
+
+def _enroll_custom_voices():
+    """Register every VOICE_REFS_DIR/*.wav as a preset named after its filename.
+
+    Runs BEFORE the default voice is resolved, so VIENEU_VOICE may name a cloned voice.
+    One bad clip must not take the service down -- it is logged and skipped, and the
+    server still starts on whatever voices did enroll.
+    """
+    if not VOICE_REFS_DIR.is_dir():
+        return
+    for wav in sorted(VOICE_REFS_DIR.glob("*.wav")):
+        name = wav.stem
+        try:
+            t0 = time.perf_counter()
+            tts.add_voice(name, str(wav), denoise=True, description=f"clone từ {wav.name}")
+            log(f"nhân bản giọng '{name}' từ {wav.name} ({time.perf_counter() - t0:.1f}s)")
+        except Exception as e:
+            log(f"không nhân bản được '{name}' từ {wav.name}: {e}", level="ERROR")
+
+
+_enroll_custom_voices()
 
 voice_data = _resolve_voice(VOICE)
 log(f"sẵn sàng. mode={MODE}, giọng yêu cầu={VOICE}, port={PORT}")
