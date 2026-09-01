@@ -10,9 +10,7 @@ Thai Son, Duc Tri, My Duyen, Truc Ly, Xuan Vinh, Trong Huu, Binh An, Ngoc Linh
 vieneu-tts-mlx-conversion-research-en.md (VieNeu-TTS repo) section 9 for the
 full history/tradeoffs of the two checkpoint generations.
 
-Also supports VIENEU_MODE=standard (VieNeu-TTS-v2, GGUF/Metal + neucodec,
-default voice Doan) as a fallback/rollback path -- see the MODE/BACKEND env
-vars below for all options.
+Rollback path is VIENEU_BACKEND (pytorch/onnx) -- see the env vars below.
 Run:  ./run_vieneu.sh   (or set the VIENEU_* env vars yourself and run this file directly)
 """
 import os
@@ -20,6 +18,7 @@ import re
 import io
 import time
 import unicodedata
+import json
 import wave
 import tempfile
 from pathlib import Path
@@ -37,10 +36,7 @@ log = make_logger("vieneu")
 
 VOICE = os.environ.get("VIENEU_VOICE", "Doan")
 PORT = int(os.environ.get("VIENEU_PORT", "8002"))
-MODE = os.environ.get("VIENEU_MODE", "standard")  # standard: v2 GGUF + neucodec (~1.2s, Doan voice, correct Southern accent). turbo: v2-Turbo-GGUF+ONNX (~0.56s, ~2x faster BUT the Thuc Doan voice sounds different/Northern-leaning -> user didn't like it)
-# Emotion passed into the constructor (per the upstream docs): "natural" (adds the <|emotion_0|> tag)
-# or "storytelling" (no tag -> narrator-style voice).
-EMOTION = os.environ.get("VIENEU_EMOTION", "natural")
+MODE = os.environ.get("VIENEU_MODE", "v3turbo")
 # v3turbo only: which engine backs Vieneu(mode="v3turbo"). "mlx" (default) = the MLX port
 # (Apple Silicon, see vieneu-tts-mlx-conversion-research-en.md in the VieNeu-TTS repo).
 # "pytorch" = force MPS. "onnx" = the package's CPU/int8 engine. Rollback: set to "pytorch".
@@ -119,7 +115,7 @@ def _normalize_wav(data):
 # gain + soft-limiter (compress peaks with tanh -> smooth, no clipping/crackle). Device is
 # already at max volume + VieNeu peaks at ~-1.8dB so plain gain can't go louder; peaks must
 # be compressed to raise the RMS instead.
-BOOST_DB = float(os.environ.get("VIENEU_BOOST_DB", "3.5"))  # +3.5dB ~= +50% loudness (for standard). turbo comes out ~5dB quieter -> need ~7.5 if using turbo.
+BOOST_DB = float(os.environ.get("VIENEU_BOOST_DB", "3.5"))  # +3.5dB ~= +50% loudness
 # Pitch shift for a more "cutesy"/playful voice. >1 = higher+faster (resample). 1.0=off. ~1.06-1.10 is a good amount.
 PITCH = float(os.environ.get("VIENEU_PITCH", "1.0"))
 
@@ -207,10 +203,7 @@ def _trim_silence(data, keep_ms=180, thr=0.012):
 log(f"nạp VieNeu-TTS (mode={MODE}, backend={BACKEND}"
     + (f", mlx_checkpoint={MLX_CHECKPOINT}" if MODE == "v3turbo" and BACKEND == "mlx" else "")
     + f", giọng {VOICE})...")
-# turbo does NOT accept an emotion parameter (only standard does).
-if MODE == "standard":
-    tts = Vieneu(mode=MODE, emotion=EMOTION)
-elif MODE == "v3turbo":
+if MODE == "v3turbo":
     if BACKEND == "mlx":
         tts = Vieneu(
             mode=MODE, backend="mlx",
@@ -245,7 +238,7 @@ FALLBACK_VOICE = os.environ.get("VIENEU_FALLBACK_VOICE", _fallback_default)
 
 
 def _resolve_voice(name):
-    """Match a preset voice, tolerating naming differences between standard/turbo ('Doan' -> 'Thục Đoan (...)').
+    """Match a preset voice, tolerating naming differences ('Doan' -> 'Thục Đoan (...)').
     Falls back to FALLBACK_VOICE (not the package's bare default) if nothing matches or resolution raises."""
     try:
         return tts.get_preset_voice(name)
@@ -467,7 +460,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 @app.get("/health")
 def health():
     keys = list(getattr(tts, "_preset_voices", {}).keys())
-    resp = {"status": "ok", "voice": VOICE, "mode": MODE, "backend": BACKEND, "emotion": EMOTION,
+    resp = {"status": "ok", "voice": VOICE, "mode": MODE, "backend": BACKEND,
             "voices": keys, "cached": list(_voice_cache.keys()),
             "style_labels": STYLE_LABELS, "style_effective": STYLE_EFFECTIVE}
     if MODE == "v3turbo" and BACKEND == "mlx":
@@ -494,9 +487,61 @@ def set_voice(name: str):
     return {"ok": True, "voice": VOICE}
 
 
+@app.post("/v1/audio/speech")
+async def openai_speech(req: Request):
+    """OpenAI's audio API, so this server is a drop-in for it.
+
+    The point is not to support OpenAI. It is that a person who clones the
+    project this serves should be able to point it at *anything* — this, an
+    OpenAI key, or one of the many services that copy the same shape — by
+    typing a URL, instead of the app having to learn a dialect per provider.
+
+    The mapping is small because /tts already reads `input`:
+
+        model            accepted and ignored; this server has one voice engine
+        input            the text, as before
+        voice            the speaker, as before
+        instructions     OpenAI's field for *how* to read it, which is what
+                         this server has always called `emotion`
+        response_format  wav only, and said so rather than guessed at
+
+    `response_format` is where a silent lie would be easiest. OpenAI defaults
+    to mp3, and a caller who omits the field and receives wav bytes labelled
+    mp3 gets audio that will not play, with nothing to explain it. This
+    answers wav and refuses anything else in words.
+    """
+    body = await req.json()
+
+    fmt = (body.get("response_format") or "wav").strip().lower()
+    if fmt != "wav":
+        return Response(
+            content=json.dumps({
+                "error": {
+                    "message": f"response_format {fmt!r} is not supported; this server returns wav",
+                    "type": "invalid_request_error",
+                    "param": "response_format",
+                }
+            }),
+            media_type="application/json",
+            status_code=400,
+        )
+
+    # `instructions` is OpenAI's word for what this server calls an emotion.
+    # Passed through under the old name so the one synthesis path stays.
+    return await synth_from({
+        "input": body.get("input"),
+        "voice": body.get("voice"),
+        "emotion": body.get("instructions") or body.get("emotion"),
+    })
+
+
 @app.post("/tts")
 async def synth(req: Request):
-    body = await req.json()
+    """The original endpoint. Kept: other things in this repository call it."""
+    return await synth_from(await req.json())
+
+
+async def synth_from(body: dict):
     text = (body.get("input") or body.get("text") or "").strip()
     # Pick the voice from the request (HA sends 'voice'/'vieneu_voice'); empty -> default voice.
     voice_name = (body.get("voice") or body.get("vieneu_voice") or "").strip()

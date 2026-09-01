@@ -139,7 +139,6 @@ multidict==6.7.1
 multiprocess==0.70.19
 narwhals==2.22.1
 networkx==3.6.1
-neucodec==0.0.5
 numba==0.65.1
 numpy==2.4.6
 ollama==0.6.2

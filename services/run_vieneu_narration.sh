@@ -12,5 +12,4 @@ export VIENEU_VOICE="Thái Sơn"                     # default voice when a requ
 export VIENEU_PORT=8004                            # separate port from the robot's service (8002)
 export VIENEU_BOOST_DB=3.5
 export VIENEU_PITCH=1.0
-export FILLER_REGEN_ON_VOICE=0                     # no ESP32 robot filler clips to regenerate for this instance
 exec python vieneu_server.py
