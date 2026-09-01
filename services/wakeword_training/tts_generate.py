@@ -22,13 +22,12 @@ def make_vieneu_backend() -> TTSBackend:
     """Real backend. Must be run under services/.venv (has `vieneu` installed)."""
     from vieneu import Vieneu
 
-    tts = Vieneu(mode="standard", emotion="natural")
+    tts = Vieneu(mode="v3turbo")
 
     def backend(text: str, voice: str, temperature: float, top_k: int) -> tuple[np.ndarray, int]:
         voice_data = tts.get_preset_voice(voice)
         # Vieneu.infer() returns just the audio array, not (audio, sample_rate) --
-        # its native rate is exposed separately via tts.sample_rate (24kHz for the
-        # standard/GGUF backend, not 16kHz).
+        # its native rate is exposed separately via tts.sample_rate (not 16kHz).
         audio = np.asarray(tts.infer(text, voice=voice_data, temperature=temperature, top_k=top_k), dtype=np.float32)
         native_sample_rate = tts.sample_rate
         if native_sample_rate != TARGET_SAMPLE_RATE:
