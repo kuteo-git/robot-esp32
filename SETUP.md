@@ -230,7 +230,7 @@ python xiaozhi-esp32-server/main/xiaozhi-server/app.py
 
 ```bash
 curl http://127.0.0.1:8001/health   # -> {"status":"ok", ..., "device":"mps"|"cpu"}
-curl http://127.0.0.1:8002/health   # -> {"status":"ok","voice":"Doan",...}
+curl http://127.0.0.1:8002/health   # -> {"status":"ok","voice":"Thùy Dung",...}
 curl http://127.0.0.1:8003/xiaozhi/ota/   # -> JSON (server info) or a small HTML page
 ```
 
@@ -239,7 +239,7 @@ If all three respond, the core loop is up. Point a xiaozhi-protocol device's OTA
 
 > **Verified**: all three services above were actually started from a clean checkout of this repo
 > (reusing already-downloaded model weights to skip re-downloading multi-GB files) and confirmed
-> healthy — `whisper_server.py` (`backend":"mlx"`), `vieneu_server.py` (`"voice":"Doan"`), and
+> healthy — `whisper_server.py` (`backend":"mlx"`), `vieneu_server.py` (`"status":"ok"`), and
 > `xiaozhi-server/app.py` (VAD/ASR/LLM/intent all initialized, OTA endpoint responded 200). The
 > `log_web.py` and `search_server.py` auxiliary services were spot-checked the same way. LLM
 > replies weren't exercised end-to-end in this check (would need a real API key), but the whole
