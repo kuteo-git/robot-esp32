@@ -29,7 +29,14 @@ xiaozhi-esp32-server/main/xiaozhi-server/models/
 
 
 # MLX whisper models (lớn ~4.5GB, convert bằng services/convert_phowhisper_mlx.sh)
-services/models/
+# Loại từng mục con chứ không loại cả thư mục: git không un-ignore được file nằm trong
+# một thư mục đã bị loại, nên "services/models/" sẽ khiến dòng !… bên dưới vô hiệu.
+services/models/*
+# Trừ giọng nhân bản: mỗi giọng là 1 clip 3-8s (~600KB) -- cấu hình, không phải model
+# weights; nó chỉ dính luật trên vì tình cờ nằm dưới services/models/.
+!services/models/voice-refs/
+# ...và qua mặt luật `*.wav` toàn cục ở trên -- các clip này LÀ file wav.
+!services/models/voice-refs/*.wav
 services/asr_debug/
 
 # CodeGraph index (local, do not commit)
