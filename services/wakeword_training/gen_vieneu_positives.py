@@ -23,10 +23,14 @@ from tts_generate import apply_pitch_speed
 TARGET_SAMPLE_RATE = 16000
 VIENEU_URL = os.environ.get("VIENEU_URL", "http://127.0.0.1:8002/tts")
 
-# From :8002/health. The robot speaks in these, and they span male/female/young/old.
+# From :8002/health (VieNeu-TTS v3.3.0 roster). The robot speaks in these, and they span
+# male/female and all three regions. Ngọc Lan / Gia Bảo / Trọng Hữu / Bình An used to be here
+# but existed only in the dropped MLX "legacy" checkpoint -- a name missing from the roster
+# resolves to FALLBACK_VOICE server-side WITHOUT an error, which would silently collapse the
+# dataset onto one voice, so keep this list in sync with GET :8002/voice.
 VOICES = [
-    "Ngọc Lan", "Gia Bảo", "Thái Sơn", "Đức Trí", "Mỹ Duyên",
-    "Trúc Ly", "Xuân Vĩnh", "Trọng Hữu", "Bình An", "Ngọc Linh",
+    "Thùy Dung", "Minh Triết", "Thái Sơn", "Đức Trí", "Mỹ Duyên",
+    "Trúc Ly", "Xuân Vĩnh", "Adam", "Ngọc Huyền", "Ngọc Linh",
 ]
 # A few natural framings of the wake phrase so it isn't one fixed utterance per voice.
 PHRASES = ["Na Bi ơi", "Na Bi ơi!", "Ê Na Bi ơi", "Na Bi ơi, ", "Na Bi ơi ơi"]

@@ -251,10 +251,11 @@ uvicorn==0.49.0
 uvloop==0.22.1
 vector-quantize-pytorch==1.17.8
 vertexai==1.71.1
-# Pinned to the vieneu-tts-mlx fork's v3.0.5 tag (not PyPI): the MLX backend
-# targets the VieNeu-TTS v3.0.5-era checkpoint. See
-# https://github.com/kuteo-git/VieNeu-TTS-MLX for the port itself.
-vieneu[gpu,mlx] @ git+https://github.com/kuteo-git/VieNeu-TTS-MLX.git@v3.0.5
+# Upstream VieNeu-TTS, pinned to the v3.3.0 tag. No extras: upstream's v3.3.0 core is
+# torch-free and runs v3 Turbo on ONNX Runtime, and it has no [gpu] extra at all (GPU is a
+# manual torch install there). The [mlx] extra and the kuteo-git MLX fork this used to pin
+# are gone -- upstream's ONNX engine benchmarked faster than the MLX port on this machine.
+vieneu @ git+https://github.com/pnnbao97/VieNeu-TTS.git@v3.3.0
 watchfiles==1.2.0
 websocket-client==1.9.0
 websockets==14.2

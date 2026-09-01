@@ -59,6 +59,6 @@ if __name__ == "__main__":
 
     # A spread across the production voice catalog (from :8002/health) so the
     # model rejects the robot regardless of which preset is active.
-    VOICES = ["Ngọc Lan", "Ngọc Linh", "Gia Bảo", "Mỹ Duyên", "Trúc Ly", "Xuân Vĩnh"]
+    VOICES = ["Thùy Dung", "Ngọc Linh", "Minh Triết", "Mỹ Duyên", "Trúc Ly", "Xuân Vĩnh"]
     count = gen_vieneu_negatives(ROBOT_NEGATIVE_SENTENCES, VOICES, "data/negative_vi/robot_voice")
     print(f"wrote {count} robot-voice negatives")

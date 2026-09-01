@@ -2,15 +2,12 @@
 VieNeu-TTS server — reads Vietnamese for xiaozhi-server (TTS type=custom).
 Accepts POST JSON {"input": "<text>"} -> returns WAV bytes. Default port 8002.
 
-Production config (see run_vieneu.sh): VIENEU_MODE=v3turbo, VIENEU_BACKEND=mlx
--> v3 Turbo on the MLX port (Apple Silicon Metal), MLX_CHECKPOINT="legacy" by
-default (root-of-repo "v3.0.5"-era checkpoint, 10 voices: Ngoc Lan, Gia Bao,
-Thai Son, Duc Tri, My Duyen, Truc Ly, Xuan Vinh, Trong Huu, Binh An, Ngoc Linh
--- NOT Thuc Doan, that voice only exists in the "update" checkpoint). See
-vieneu-tts-mlx-conversion-research-en.md (VieNeu-TTS repo) section 9 for the
-full history/tradeoffs of the two checkpoint generations.
-
-Rollback path is VIENEU_BACKEND (pytorch/onnx) -- see the env vars below.
+Production config (see run_vieneu.sh): VieNeu-TTS v3.3.0 upstream, mode=v3turbo
+on its torch-free ONNX Runtime engine -- which measured FASTER than the MLX port
+this server used until 2026-09-01 (0.23-0.54s vs 0.82-1.45s per robot utterance),
+so the MLX backend and its two hand-converted checkpoints were dropped entirely.
+v3.3.0 ships 20 preset voices; the MLX "legacy" roster (Ngoc Lan, Gia Bao, Trong
+Huu, Binh An) does not exist here.
 Run:  ./run_vieneu.sh   (or set the VIENEU_* env vars yourself and run this file directly)
 """
 import os
@@ -21,7 +18,6 @@ import unicodedata
 import json
 import wave
 import tempfile
-from pathlib import Path
 import numpy as np
 from datetime import datetime
 from fastapi import FastAPI, Request
@@ -34,39 +30,12 @@ from _logsetup import make_logger, install_request_logging
 
 log = make_logger("vieneu")
 
-VOICE = os.environ.get("VIENEU_VOICE", "Doan")
+VOICE = os.environ.get("VIENEU_VOICE", "Thùy Dung")  # "Doan" until 2026-09-01: a v2-era name absent from the v3.3.0 roster, so the bare default silently fell back
 PORT = int(os.environ.get("VIENEU_PORT", "8002"))
 MODE = os.environ.get("VIENEU_MODE", "v3turbo")
-# v3turbo only: which engine backs Vieneu(mode="v3turbo"). "mlx" (default) = the MLX port
-# (Apple Silicon, see vieneu-tts-mlx-conversion-research-en.md in the VieNeu-TTS repo).
-# "pytorch" = force MPS. "onnx" = the package's CPU/int8 engine. Rollback: set to "pytorch".
-BACKEND = os.environ.get("VIENEU_BACKEND", "mlx")
-# backend="mlx" only: which checkpoint generation. "legacy" (default, matches the vieneu
-# package's own default as of 2026-07-13) = root-of-repo "v3.0.5"-era checkpoint: 2
-# acoustic-decoder layers, no speaker embedding, 10 preset voices selected by a reserved
-# leading-token id (Ngoc Lan, Gia Bao, Thai Son, Duc Tri, My Duyen, Truc Ly, Xuan Vinh,
-# Trong Huu, Binh An, Ngoc Linh -- NOT Thuc Doan, that voice only exists in "update").
-# "update" = the update/ subfolder checkpoint (1 layer, speaker-embedding voices incl.
-# Thuc Doan) -- the MLX backend's original checkpoint before the v3.0.5 switch-over.
-MLX_CHECKPOINT = os.environ.get("VIENEU_MLX_CHECKPOINT", "legacy")
-_MODELS_DIR = Path(__file__).resolve().parent / "models"
-_mlx_weights_default = (
-    str(_MODELS_DIR / "vieneu-mlx-legacy" / "v3turbo_backbone_legacy.safetensors") if MLX_CHECKPOINT == "legacy"
-    else str(_MODELS_DIR / "vieneu-mlx" / "v3turbo_backbone.safetensors")
-)
-MLX_BACKBONE_WEIGHTS = os.environ.get("VIENEU_MLX_BACKBONE_WEIGHTS", _mlx_weights_default)
-MLX_MOSS_WEIGHTS = os.environ.get("VIENEU_MLX_MOSS_WEIGHTS", str(_MODELS_DIR / "vieneu-mlx" / "moss_decoder.safetensors"))  # same MOSS decoder for both checkpoints, unaffected by MLX_CHECKPOINT
-_mlx_quant = os.environ.get("VIENEU_MLX_QUANTIZE", "4").strip()
-MLX_QUANTIZE_BITS = int(_mlx_quant) if _mlx_quant and _mlx_quant != "0" else None  # "" or "0" -> fp32
-
-# v3turbo speaking-style tokens (see configuration_v3_turbo.py's style_labels). Only the
-# "update" MLX checkpoint (and the pytorch/onnx v3turbo engines) actually resolve these --
-# the "legacy" checkpoint's engine accepts `style` but ignores it (voice identity is a
-# reserved-id token there, there's no separate style axis). Passing it regardless is
-# harmless either way (every backend's infer() either uses it or swallows it via **kwargs),
-# so callers that don't care about style (e.g. the robot) just omit the field.
+# v3turbo speaking-style tokens (see configuration_v3_turbo.py's style_labels). The upstream
+# v3turbo engine resolves all three. Callers that don't care about style just omit the field.
 STYLE_LABELS = {"natural": "tu_nhien", "storytelling": "doc_truyen", "news": "tin_tuc"}
-STYLE_EFFECTIVE = not (MODE == "v3turbo" and BACKEND == "mlx" and MLX_CHECKPOINT == "legacy")
 
 
 def _make_silent_wav(ms=150, rate=24000):
@@ -200,41 +169,15 @@ def _trim_silence(data, keep_ms=180, thr=0.012):
         return data
 
 
-log(f"nạp VieNeu-TTS (mode={MODE}, backend={BACKEND}"
-    + (f", mlx_checkpoint={MLX_CHECKPOINT}" if MODE == "v3turbo" and BACKEND == "mlx" else "")
-    + f", giọng {VOICE})...")
-if MODE == "v3turbo":
-    if BACKEND == "mlx":
-        tts = Vieneu(
-            mode=MODE, backend="mlx",
-            mlx_checkpoint=MLX_CHECKPOINT,
-            mlx_backbone_weights=MLX_BACKBONE_WEIGHTS,
-            mlx_moss_weights=MLX_MOSS_WEIGHTS,
-            mlx_quantize_bits=MLX_QUANTIZE_BITS,
-        )
-    elif BACKEND == "pytorch":
-        # v3turbo's own device="auto" only checks torch.cuda (not available on Mac) -> it ALWAYS
-        # falls back to CPU/ONNX (onnx_runtime_lite.py hardcodes CPUExecutionProvider), ignoring the
-        # GPU MPS that's actually available -> much slower (~6-7s/sentence instead of ~3.3s). Force
-        # device=mps to use PyTorch+Metal instead.
-        tts = Vieneu(mode=MODE, device="mps")
-    else:
-        tts = Vieneu(mode=MODE, backend=BACKEND)
-else:
-    tts = Vieneu(mode=MODE)
+log(f"nạp VieNeu-TTS (mode={MODE}, giọng {VOICE})...")
+tts = Vieneu(mode=MODE)
 
 
 # Voice used when a requested name can't be resolved at all (unmatched, or the preset
 # lookup itself raises) -- picked over the package's own bare default so an unexpected/
 # renamed catalog (e.g. after a vieneu package upgrade changes the voice roster) still
 # lands on a known-good voice instead of whatever the package happens to default to.
-# "Thuc Doan" only exists in the "update" checkpoint's voice set (10 different names in
-# "legacy", see MLX_CHECKPOINT above) -- default the fallback per checkpoint so it isn't
-# silently unresolvable itself.
-_fallback_default = "Thục Đoan"
-if MODE == "v3turbo" and BACKEND == "mlx" and MLX_CHECKPOINT == "legacy":
-    _fallback_default = "Ngọc Linh"
-FALLBACK_VOICE = os.environ.get("VIENEU_FALLBACK_VOICE", _fallback_default)
+FALLBACK_VOICE = os.environ.get("VIENEU_FALLBACK_VOICE", "Thục Đoan")
 
 
 def _resolve_voice(name):
@@ -460,12 +403,9 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 @app.get("/health")
 def health():
     keys = list(getattr(tts, "_preset_voices", {}).keys())
-    resp = {"status": "ok", "voice": VOICE, "mode": MODE, "backend": BACKEND,
+    return {"status": "ok", "voice": VOICE, "mode": MODE,
             "voices": keys, "cached": list(_voice_cache.keys()),
-            "style_labels": STYLE_LABELS, "style_effective": STYLE_EFFECTIVE}
-    if MODE == "v3turbo" and BACKEND == "mlx":
-        resp["mlx_checkpoint"] = MLX_CHECKPOINT
-    return resp
+            "style_labels": STYLE_LABELS}
 
 
 @app.get("/voice")
