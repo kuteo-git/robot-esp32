@@ -60,7 +60,7 @@ END_WAV = os.environ.get("NEWS_END_WAV", "/Volumes/Data/download/end_news.wav")
 
 WEATHER_URL = os.environ.get("NEWS_WEATHER_URL", "http://127.0.0.1:8010/weather")
 POWER_URL = os.environ.get("NEWS_POWER_URL", "http://127.0.0.1:8011/power_outage")
-TTS_URL = os.environ.get("NEWS_TTS_URL", "http://127.0.0.1:8002/tts")
+TTS_URL = os.environ.get("NEWS_TTS_URL", "http://127.0.0.1:8002/v1/audio/speech")
 
 LLM_BASE = os.environ.get("NEWS_LLM_BASE_URL", "http://127.0.0.1:20128/api/v1")
 LLM_MODEL = os.environ.get("NEWS_LLM_MODEL", "r1-combo")
@@ -632,7 +632,11 @@ def _gap_wav():
 
 
 def _synth(text, voice, path):
-    body = {"text": text, "voice": voice, "emotion": "news"}
+    # `input`, not `text`: the one speech endpoint is OpenAI-shaped and reads that
+    # field. No `emotion`/`instructions` either -- the speaking style is deprecated
+    # on v3 Turbo, where it is carried by the voice itself, so a "news" style here
+    # was a field the engine accepted and threw away.
+    body = {"input": text, "voice": voice, "response_format": "wav"}
     r = requests.post(TTS_URL, json=body, timeout=120)
     r.raise_for_status()
     with open(path, "wb") as f:

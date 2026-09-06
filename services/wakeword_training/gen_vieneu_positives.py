@@ -21,7 +21,7 @@ import soundfile as sf
 from tts_generate import apply_pitch_speed
 
 TARGET_SAMPLE_RATE = 16000
-VIENEU_URL = os.environ.get("VIENEU_URL", "http://127.0.0.1:8002/tts")
+VIENEU_URL = os.environ.get("VIENEU_URL", "http://127.0.0.1:8002/v1/audio/speech")
 
 # From :8002/health (VieNeu-TTS v3.3.0 roster). The robot speaks in these, and they span
 # male/female and all three regions. Ngọc Lan / Gia Bảo / Trọng Hữu / Bình An used to be here

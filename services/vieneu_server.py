@@ -466,7 +466,10 @@ async def openai_speech(req: Request):
     OpenAI key, or one of the many services that copy the same shape — by
     typing a URL, instead of the app having to learn a dialect per provider.
 
-    The mapping is small because /tts already reads `input`:
+    This is the only speech endpoint. There used to be a second one, `/tts`,
+    speaking a shape of this server's own invention; two endpoints for one act
+    is two places for a caller to be pointed and one of them to rot. The
+    mapping is small because the synthesis path already reads `input`:
 
         model            accepted and ignored; this server has one voice engine
         input            the text, as before
@@ -496,6 +499,26 @@ async def openai_speech(req: Request):
             status_code=400,
         )
 
+    # A caller that sent the text under some other key gets told so, rather than
+    # a silent WAV. `synth_from` answers empty text with 150ms of silence, which
+    # is right for a robot whose model just emitted nothing but punctuation and
+    # exactly wrong for a client pointed at the wrong field name: the request
+    # succeeds, the audio plays, and nothing anywhere says why the house went
+    # quiet. Measured once already -- the news service sent `text`, not `input`.
+    if not str(body.get("input") or "").strip():
+        return Response(
+            content=json.dumps({
+                "error": {
+                    "message": "field 'input' is required and must not be empty"
+                               f" (received keys: {sorted(body)})",
+                    "type": "invalid_request_error",
+                    "param": "input",
+                }
+            }),
+            media_type="application/json",
+            status_code=400,
+        )
+
     # `instructions` is OpenAI's word for what this server calls an emotion.
     # Passed through under the old name so the one synthesis path stays.
     return await synth_from({
@@ -503,12 +526,6 @@ async def openai_speech(req: Request):
         "voice": body.get("voice"),
         "emotion": body.get("instructions") or body.get("emotion"),
     })
-
-
-@app.post("/tts")
-async def synth(req: Request):
-    """The original endpoint. Kept: other things in this repository call it."""
-    return await synth_from(await req.json())
 
 
 async def synth_from(body: dict):

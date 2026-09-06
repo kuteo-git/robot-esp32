@@ -20,7 +20,7 @@ import requests
 import soundfile as sf
 
 TARGET_SAMPLE_RATE = 16000
-VIENEU_URL = os.environ.get("VIENEU_URL", "http://127.0.0.1:8002/tts")
+VIENEU_URL = os.environ.get("VIENEU_URL", "http://127.0.0.1:8002/v1/audio/speech")
 
 
 def _synth(text: str, voice: str) -> bytes:
