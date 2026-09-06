@@ -223,6 +223,46 @@ def _resolve_voice(name):
     return tts.get_preset_voice()
 
 
+
+def _borrow_codes(name, wav):
+    """Replace a cloned voice's reference codes with a preset's, if asked to.
+
+    A cloned voice carries two things: `speaker_emb`, which is who is speaking,
+    and `codes`, the encoded reference audio. Measured on this library: the codes
+    are what decide how `tʃ` is realised -- sea-g2p gives `ch` and `tr` one single
+    phoneme (it models the Hanoi accent, where they genuinely merge), so nothing
+    in the text can separate them and the reference alone decides whether the
+    sound lands on "ch", on "tr", or between the two. A clip of a speaker who
+    keeps them apart lands between, which is heard as "xin trào".
+
+    Swapping in a preset's codes fixes that while `speaker_emb` keeps the voice
+    recognisable. Which preset is right is a question for ears, not for a
+    spectral measure -- a centroid of the affricate was tried and its spread
+    across repeats was larger than the gap between voices, so it could not tell
+    them apart.
+
+    Declared in a sidecar file beside the clip -- `<name>.codes-from` holding a
+    preset name -- rather than in code or an env var: the rule then lives next to
+    the wav it is about, and any future cloned voice can use it without this
+    function learning another name.
+    """
+    sidecar = wav.with_suffix(".codes-from")
+    if not sidecar.is_file():
+        return None
+    source = sidecar.read_text(encoding="utf-8").strip()
+    if not source:
+        return None
+    try:
+        codes = tts.get_preset_voice(source)["codes"]
+    except Exception as e:
+        # Not fatal: the voice already enrolled from its own clip and works.
+        log(f"'{name}': không mượn được codes của '{source}' ({e}) -> giữ codes gốc",
+            level="WARNING")
+        return None
+    tts._preset_voices[name]["codes"] = codes
+    return source
+
+
 def _enroll_custom_voices():
     """Register every VOICE_REFS_DIR/*.wav as a preset named after its filename.
 
@@ -237,7 +277,10 @@ def _enroll_custom_voices():
         try:
             t0 = time.perf_counter()
             tts.add_voice(name, str(wav), denoise=True, description=f"clone từ {wav.name}")
-            log(f"nhân bản giọng '{name}' từ {wav.name} ({time.perf_counter() - t0:.1f}s)")
+            borrowed = _borrow_codes(name, wav)
+            log(f"nhân bản giọng '{name}' từ {wav.name}"
+                f"{f', codes mượn của {borrowed}' if borrowed else ''}"
+                f" ({time.perf_counter() - t0:.1f}s)")
         except Exception as e:
             log(f"không nhân bản được '{name}' từ {wav.name}: {e}", level="ERROR")
 
