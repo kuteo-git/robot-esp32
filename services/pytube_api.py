@@ -307,12 +307,28 @@ def download_audio_with_ytdlp(video_id):
             'quiet': True,
             'no_warnings': True,
             'ignoreerrors': False,
-            # tv is now DRM-gated, ios needs a PO token (2026-07) -> went back to android/web
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android', 'web'],
-                }
-            },
+            # NO player_client override, and that is the whole point (measured 2026-09-25).
+            #
+            # Pinning android/web was right in 2026-07 (tv went DRM-gated, ios wanted a PO token)
+            # and became the thing costing us audio quality: YouTube put both of those clients
+            # behind the SABR-only experiment, so every audio-only format comes back without a URL
+            # and `bestaudio/best` silently fell through to format 18 -- the AAC 128k/44.1k audio
+            # of a 360p VIDEO. That is 3.5 MB of download for 0.5 MB of audio, resampled 44.1->48
+            # on the way to a device that plays 48 kHz.
+            #
+            # Measured, same video, same call:
+            #   yt-dlp 2026.07.04 + android,web  -> only format 18
+            #   yt-dlp 2026.07.04 + default      -> 140/251 listed, HTTP 403 on download
+            #   yt-dlp 2026.08.19 + android,web  -> only format 18
+            #   yt-dlp 2026.08.19 + default      -> 251 opus 132k/48 kHz, downloaded, 3/3 videos
+            #
+            # So BOTH halves are load-bearing: the upgrade alone changes nothing while this
+            # override stands, and removing the override alone gives 403. yt-dlp >= 2026.08.19
+            # reaches it through the visionos client and solves the JS challenge with `deno`
+            # (/opt/homebrew/bin, already on this service's PATH via run_pytube.sh) -- no PO token
+            # provider needed, which is why nothing listens on 127.0.0.1:4416.
+            #
+            # If YouTube gates visionos next, THIS is the line to put back.
             # Extract audio -> a real mp3 via ffmpeg (machine has ffmpeg in PATH)
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',

@@ -1,6 +1,9 @@
 Flask==2.3.3
 pytubefix==9.4.1
-yt-dlp
+# >=2026.08.19: older builds cannot reach YouTube's audio-only formats at all -- both the
+# android and web clients are behind the SABR-only experiment, so bestaudio/best falls
+# through to format 18 (the AAC of a 360p video). See pytube_api.py's note on player_client.
+yt-dlp>=2026.08.19
 yt-dlp-ejs
 ytmusicapi
 # LƯU Ý: cần cài Deno (JS runtime) để yt-dlp giải YouTube signature/n-challenge:
