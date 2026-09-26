@@ -31,9 +31,19 @@ class OpusEncoderUtils:
         # 总帧大小 = 每帧样本数 * 通道数
         self.total_frame_size = self.frame_size * channels
 
-        # Bitrate: 24k đủ cho GIỌNG nhưng NÁT NHẠC (48kHz mono cần nhiều bit hơn) -> 96k (env OPUS_BITRATE).
-        # Encoder dùng chung TTS + nhạc; 96k cho nhạc hay, giọng cũng tốt hơn, băng thông wifi thừa sức.
-        self.bitrate = int(os.environ.get("OPUS_BITRATE", "96000"))  # bps
+        # Bitrate: 24k đủ cho GIỌNG nhưng NÁT NHẠC (48kHz cần nhiều bit hơn) -> 96k, rồi 120k khi
+        # đường ra thành STEREO (26/09/2026). Đo trên dây trước khi đổi: 719 byte/frame, 110 kbps
+        # gộp header -> 96k đang thật sự có tác dụng, nên nút thắt không còn ở bitrate mà ở việc
+        # nhạc bị downmix xuống mono. 120k là cho HAI kênh; encoder dùng chung TTS + nhạc, và giọng
+        # mono upmix lên stereo gần như không tốn thêm bit vì Opus chuyển sang mid/side.
+        # -> 160k (26/09/2026, cùng ngày). Khác loại với hai lần trước và ghi lại cho rõ: 24k->96k
+        # mua TRẦN TẦN SỐ (Opus tự cắt ngọn ở bitrate thấp), 96k mono->120k stereo mua lại MỘT KÊNH
+        # bị vứt đi; lần này chỉ mua ĐỘ MỊN lượng tử hoá, thứ phải ABX mới nghe ra — và nó còn nằm
+        # TRƯỚC chặng SBC của Bluetooth, nơi mọi độ mịn đó bị mã hoá lại lần nữa.
+        # 160k là mức cao nhất còn chỗ thở: đo bằng chính encoder này, frame 60 ms stereo ra
+        # 1199 byte ở 160k, 1274 ở 170k và 1499 ở 200k — trần một gói Opus là 1275 byte. Muốn cao
+        # hơn thì phải rút frame_size_ms xuống, không phải nâng riêng số này.
+        self.bitrate = int(os.environ.get("OPUS_BITRATE", "160000"))  # bps
         self.complexity = 10  # 最高质量
 
         # 缓冲区初始化为空

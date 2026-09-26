@@ -151,7 +151,7 @@ class TTSProviderBase(ABC):
 
     def _decode_thinking_pcm(self, sound_file, gain_db):
         audio = AudioSegment.from_file(sound_file)
-        audio = audio.set_channels(1).set_frame_rate(self.conn.sample_rate).set_sample_width(2)
+        audio = audio.set_channels(self.conn.channels).set_frame_rate(self.conn.sample_rate).set_sample_width(2)
         if gain_db:
             audio = audio.apply_gain(gain_db)
         return audio.raw_data
@@ -219,7 +219,7 @@ class TTSProviderBase(ABC):
         LOOKAHEAD_SEC = 1.0
         POLL_SEC = 0.05
         encoder = opus_encoder_utils.OpusEncoderUtils(
-            sample_rate=sample_rate, channels=1, frame_size_ms=frame_ms
+            sample_rate=sample_rate, channels=self.conn.channels, frame_size_ms=frame_ms
         )
         logger.bind(tag=TAG).info(
             f"Thinking loop started ({os.path.basename(sound_file)}, {gain_db:+g}dB)"
@@ -443,7 +443,7 @@ class TTSProviderBase(ABC):
         # 根据conn的sample_rate创建编码器，如果子类已经创建则不覆盖（IndexTTS接口返回为24kHZ-待重采样处理）
         if not hasattr(self, 'opus_encoder') or self.opus_encoder is None:
             self.opus_encoder = opus_encoder_utils.OpusEncoderUtils(
-                sample_rate=conn.sample_rate, channels=1, frame_size_ms=60
+                sample_rate=conn.sample_rate, channels=conn.channels, frame_size_ms=60
             )
 
         # tts 消化线程

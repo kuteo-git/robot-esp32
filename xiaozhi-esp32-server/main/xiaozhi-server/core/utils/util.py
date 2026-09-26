@@ -237,7 +237,7 @@ def extract_json_from_string(input_string):
 
 
 def audio_to_data_stream(
-    audio_file_path, is_opus=True, callback: Callable[[Any], Any] = None, sample_rate=16000, opus_encoder=None
+    audio_file_path, is_opus=True, callback: Callable[[Any], Any] = None, sample_rate=16000, opus_encoder=None, channels=1
 ) -> None:
     # 获取文件后缀名
     file_type = os.path.splitext(audio_file_path)[1]
@@ -248,12 +248,15 @@ def audio_to_data_stream(
         audio_file_path, format=file_type, parameters=["-nostdin"]
     )
 
-    # 转换为单声道/指定采样率/16位小端编码（确保与编码器匹配）
-    audio = audio.set_channels(1).set_frame_rate(sample_rate).set_sample_width(2)
+    # Channel count comes from the ENCODER when there is one, not from a second argument nobody
+    # keeps in step: the encoder was built for this connection and already knows whether the wire
+    # is mono or stereo, and PCM that does not match its frame size is silently mis-framed.
+    ch = opus_encoder.channels if opus_encoder is not None else channels
+    audio = audio.set_channels(ch).set_frame_rate(sample_rate).set_sample_width(2)
 
     # 获取原始PCM数据（16位小端）
     raw_data = audio.raw_data
-    pcm_to_data_stream(raw_data, is_opus, callback, sample_rate, opus_encoder)
+    pcm_to_data_stream(raw_data, is_opus, callback, sample_rate, opus_encoder, ch)
 
 
 async def audio_to_data(
@@ -335,7 +338,8 @@ async def audio_to_data(
 
 
 def audio_bytes_to_data_stream(
-    audio_bytes, file_type, is_opus, callback: Callable[[Any], Any], sample_rate=16000, opus_encoder=None
+    audio_bytes, file_type, is_opus, callback: Callable[[Any], Any], sample_rate=16000,
+    opus_encoder=None, channels=1,
 ) -> None:
     """
     直接用音频二进制数据转为opus/pcm数据，支持wav、mp3、p3
@@ -348,12 +352,13 @@ def audio_bytes_to_data_stream(
         audio = AudioSegment.from_file(
             BytesIO(audio_bytes), format=file_type, parameters=["-nostdin"]
         )
-        audio = audio.set_channels(1).set_frame_rate(sample_rate).set_sample_width(2)
+        ch = opus_encoder.channels if opus_encoder is not None else channels
+        audio = audio.set_channels(ch).set_frame_rate(sample_rate).set_sample_width(2)
         raw_data = audio.raw_data
-        pcm_to_data_stream(raw_data, is_opus, callback, sample_rate, opus_encoder)
+        pcm_to_data_stream(raw_data, is_opus, callback, sample_rate, opus_encoder, ch)
 
 
-def pcm_to_data_stream(raw_data, is_opus=True, callback: Callable[[Any], Any] = None, sample_rate=16000, opus_encoder=None):
+def pcm_to_data_stream(raw_data, is_opus=True, callback: Callable[[Any], Any] = None, sample_rate=16000, opus_encoder=None, channels=1):
     """
     将PCM数据流式编码为Opus或直接输出PCM
 
@@ -366,21 +371,25 @@ def pcm_to_data_stream(raw_data, is_opus=True, callback: Callable[[Any], Any] = 
     """
     using_temp_encoder = False
     if is_opus and opus_encoder is None:
-        encoder = opuslib_next.Encoder(sample_rate, 1, opuslib_next.APPLICATION_AUDIO)
+        encoder = opuslib_next.Encoder(sample_rate, channels, opuslib_next.APPLICATION_AUDIO)
         using_temp_encoder = True
 
     # 编码参数
     frame_duration = 60  # 60ms per frame
-    frame_size = int(sample_rate * frame_duration / 1000)  # samples/frame
+    frame_size = int(sample_rate * frame_duration / 1000)  # samples/frame PER CHANNEL
+    # A stereo frame is twice the bytes of a mono one. The stride used to be frame_size * 2 for
+    # every case, which is right only for mono -- on a stereo stream it would cut every frame in
+    # half and hand the encoder a frame size it was not built for.
+    frame_bytes = frame_size * channels * 2  # 16bit = 2 bytes/sample
 
     # 按帧处理所有音频数据（包括最后一帧可能补零）
-    for i in range(0, len(raw_data), frame_size * 2):  # 16bit=2bytes/sample
+    for i in range(0, len(raw_data), frame_bytes):
         # 获取当前帧的二进制数据
-        chunk = raw_data[i : i + frame_size * 2]
+        chunk = raw_data[i : i + frame_bytes]
 
         # 如果最后一帧不足，补零
-        if len(chunk) < frame_size * 2:
-            chunk += b"\x00" * (frame_size * 2 - len(chunk))
+        if len(chunk) < frame_bytes:
+            chunk += b"\x00" * (frame_bytes - len(chunk))
 
         if is_opus:
             if using_temp_encoder:

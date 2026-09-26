@@ -167,7 +167,7 @@ sessions that *don't* send one. The same applies to `ha_config` (Home Assistant)
 (persona).
 
 This means the server does **not** need its own working LLM key if every client brings its own. The
-bundled Android app (`xiaozhi-android`, the "R1 control" project) does exactly this: it puts the
+bundled [Android app](https://github.com/kuteo-git/xiaozhi-android) does exactly this: it puts the
 provider you configure in its Settings into the hello:
 
 ```json

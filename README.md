@@ -35,7 +35,8 @@ Device fetches the server address + timezone at boot
 3. SileroVAD cuts the utterance when you stop talking → sends the wav to **Whisper :8001** → Vietnamese text.
 4. Text + conversation history + your device list → the **LLM**.
 5. If it's a home command, the LLM calls a tool (`hass_set_state`, `hass_get_state`, `play_music_room`, …) → Home Assistant REST API.
-6. The reply text → **VieNeu-TTS :8002** → wav → the server encodes Opus → plays on the device speaker.
+6. The reply text → **VieNeu-TTS :8002** → wav → the server encodes Opus (48 kHz stereo, 160 kbps)
+   → plays on the device speaker.
 
 **Three processes are the minimum working system:** Whisper (`:8001`), VieNeu (`:8002`), and
 xiaozhi-server (`:8000` / `:8003`). Everything else is optional.
@@ -53,8 +54,9 @@ xiaozhi-server (`:8000` / `:8003`). Everything else is optional.
 - **Optional helper services** — weather, power-outage schedule, web search, YouTube music playback,
   and a live log viewer.
 - **WebSocket devices** — a PHICOMM R1 speaker running the self-built Android client
-  (`xiaozhi-android`), or any other [xiaozhi-protocol](https://github.com/78/xiaozhi-esp32) device
-  (e.g. an ESP32-S3) that connects over WebSocket.
+  ([kuteo-git/xiaozhi-android](https://github.com/kuteo-git/xiaozhi-android)), or any other
+  [xiaozhi-protocol](https://github.com/78/xiaozhi-esp32) device (e.g. an ESP32-S3) that connects
+  over WebSocket.
 
 ---
 
@@ -137,14 +139,30 @@ Key settings:
 | TTS | `selected_module.TTS` | `VieNeuTTS` (local) or `EdgeTTS` (faster, cloud). |
 | Persona | `prompt:` | the assistant's personality and home-control rules. |
 | Home devices | `plugins.home_assistant.devices` | block scalar (`devices: \|`), one `Area,Voice Name,entity_id` per line. |
+| Audio output format | `xiaozhi.audio_params` | `sample_rate` and `channels` for everything the server sends. **The client has to be set to the same values.** The two ends do not negotiate, so a mismatch comes out as noise. 48000 / 2 here. |
+
+### Audio the server sends
+
+One Opus encoder carries both speech and music, at `xiaozhi.audio_params` and a bitrate set in
+`core/utils/opus_encoder_utils.py` (`OPUS_BITRATE` overrides it).
+
+- **Channels matter more than bitrate for music.** Music used to be downmixed to mono before it
+  reached Opus, and no bitrate buys a discarded channel back. Speech is mono at the source, so it
+  gains nothing from stereo, since Opus spends almost no bits on a side channel that is silent.
+- **`frame_duration` caps the bitrate.** A single Opus packet stops at 1275 bytes. Measured with
+  60 ms stereo frames, 120 kbps gives 899 bytes, 160 gives 1199, 170 gives 1274 and 200 gives 1499.
+  To go past ~170 kbps, shorten the frame instead of raising the rate.
+- **Measure the wire.** Byte counters on the client (`/proc/net/dev`) say what is actually being
+  sent: 110 kbps for mono at 96k, 132 for stereo at 120k, 173 for stereo at 160k. The config says
+  what the code would do. Only the counters say what it sent.
 
 ### Bring your own model from the client (no server-side LLM key)
 
 The server accepts **per-session, client-supplied config**. A client can send an `llm_config` (and
 optionally `ha_config` / `custom_prompt`) in its `hello`, and the server builds a session-scoped LLM
-from it — its own `selected_module.LLM` becomes just a fallback. The bundled Android app
-(`xiaozhi-android`, the "R1 control" project) does this: you set the provider in its Settings and it
-drives the model for the session.
+from it — its own `selected_module.LLM` becomes just a fallback. The
+[Android client](https://github.com/kuteo-git/xiaozhi-android) does this: you set the provider in
+its Settings and it drives the model for the session.
 
 So you can run the server with only a **placeholder** LLM in `.config.yaml` (no real key) and let the
 client supply the real one. The client LLM must be OpenAI-compatible (`"type": "openai"`), and a

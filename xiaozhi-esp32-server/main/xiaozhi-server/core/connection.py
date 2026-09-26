@@ -110,6 +110,10 @@ class ConnectionHandler:
         self.chat_history_conf = 0
         self.audio_format = "opus"
         self.sample_rate = 24000  # 默认采样率，从客户端 hello 消息中动态更新
+        # Mono unless the config says otherwise. Read from the server's own config, exactly like
+        # sample_rate: the client is told this value in the welcome message, so one place decides
+        # and both ends cannot drift.
+        self.channels = 1
 
         # 客户端状态相关
         self.client_abort = False
@@ -236,7 +240,10 @@ class ConnectionHandler:
 
             # 从配置中读取采样率
             self.sample_rate = self.welcome_msg["audio_params"]["sample_rate"]
-            self.logger.bind(tag=TAG).info(f"Configured output audio sample rate: {self.sample_rate}")
+            self.channels = self.welcome_msg["audio_params"].get("channels", 1)
+            self.logger.bind(tag=TAG).info(
+                f"Configured output audio: {self.sample_rate} Hz, {self.channels} ch"
+            )
 
             # 在后台初始化配置和组件（完全不阻塞主循环）
             asyncio.create_task(self._background_initialize())
