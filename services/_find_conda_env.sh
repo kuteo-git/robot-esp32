@@ -4,8 +4,17 @@
 # find it there even if they work fine in your interactive terminal).
 # Usage: PY="$(services/_find_conda_env.sh xiaozhi)" || exit 1; exec "$PY" script.py
 # Override: set CONDA_BASE_DIR to your conda installation root if it's not in the common spots below.
+# A repo-local venv services/.venv-<name> wins over conda (no conda needed at all):
+#   uv venv --python 3.10 services/.venv-xiaozhi   # core server + helper services
+#   uv venv --python 3.12 services/.venv-pytube    # pytube_api.py
 set -e
 ENV_NAME="$1"
+
+local_py="$(cd "$(dirname "$0")" && pwd)/.venv-$ENV_NAME/bin/python"
+if [ -x "$local_py" ]; then
+  echo "$local_py"
+  exit 0
+fi
 
 candidates=()
 [ -n "$CONDA_BASE_DIR" ] && candidates+=("$CONDA_BASE_DIR")

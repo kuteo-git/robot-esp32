@@ -1,5 +1,6 @@
 # ===== Môi trường / cache (tái tạo được) =====
 services/.venv/
+services/.venv-*/
 **/__pycache__/
 *.pyc
 *.pyo
