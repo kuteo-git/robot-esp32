@@ -22,6 +22,7 @@ LOGS = {
     "xiaozhi (chi tiết)": BASE,
     "xiaozhi (stdout)": "/tmp/robot-xiaozhi.log",
     "vieneu (TTS)": "/tmp/robot-vieneu.log",
+    "vieneu Trúc Ly Nam (:8015)": "/tmp/robot-vieneu-trucly.log",
     "whisper (ASR)": "/tmp/robot-whisper.log",
     "moonshine (ASR)": "/tmp/robot-moonshine.log",
     "pytube (yt:114)": "/tmp/robot-pytube.log",

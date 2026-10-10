@@ -25,6 +25,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from vieneu import Vieneu
+import httpx
 import uvicorn
 
 from _logsetup import make_logger, install_request_logging
@@ -42,6 +43,39 @@ MODE = os.environ.get("VIENEU_MODE", "v3turbo")
 # (tts.save_voices() defaults to writing INSIDE site-packages, which pip wipes).
 VOICE_REFS_DIR = Path(os.environ.get(
     "VIENEU_VOICE_REFS_DIR", Path(__file__).resolve().parent / "models" / "voice-refs"))
+# Which engine backs Vieneu(). Unset = the package default (torch-free ONNX on CPU), which is
+# production. A LoRA fine-tune can't run there -- upstream's ONNX graphs are exported from the
+# base model -- so the fine-tuned "Trúc Ly Nam" instance sets backend=pytorch, device=mps and
+# points BACKBONE_REPO at its merged model (see run_vieneu_trucly.sh).
+ENGINE_KWARGS = {k: v for k, v in {
+    "backend": os.environ.get("VIENEU_BACKEND"),
+    "device": os.environ.get("VIENEU_DEVICE"),
+    "backbone_repo": os.environ.get("VIENEU_BACKBONE_REPO"),
+}.items() if v}
+
+
+def _parse_remote_voices(spec):
+    """'Name=http://host:port, Other=http://…' -> {"Name": "http://host:port", …}."""
+    out = {}
+    for item in (spec or "").split(","):
+        name, sep, url = item.partition("=")
+        if sep and name.strip() and url.strip():
+            out[name.strip()] = url.strip().rstrip("/")
+    return out
+
+
+# Voices this server doesn't synthesize itself but forwards to another VieNeu instance, so
+# callers keep one URL. Exists for "Trúc Ly Nam": a LoRA fine-tune that only runs on its own
+# PyTorch/MPS engine. A forward that fails is logged and spoken locally in the default voice
+# instead -- a robot that answers in the wrong voice beats one that goes quiet.
+REMOTE_VOICES = _parse_remote_voices(os.environ.get("VIENEU_REMOTE_VOICES"))
+# Read timeout: the longest robot sentence (~15s of audio) takes ~8s on MPS (RTF ~0.56), so 20s
+# only trips on an instance that accepted the request and then hung. A dead one fails on connect.
+REMOTE_TIMEOUT = float(os.environ.get("VIENEU_REMOTE_TIMEOUT", "20"))
+REMOTE_CONNECT_TIMEOUT = 2.0
+# The voice this instance booted with: what a failed forward falls back to when the runtime
+# default (POST /voice) has itself been set to a remote voice.
+BOOT_VOICE = VOICE
 # v3turbo speaking-style tokens (see configuration_v3_turbo.py's style_labels). The upstream
 # v3turbo engine resolves all three. Callers that don't care about style just omit the field.
 STYLE_LABELS = {"natural": "tu_nhien", "storytelling": "doc_truyen", "news": "tin_tuc"}
@@ -178,8 +212,11 @@ def _trim_silence(data, keep_ms=180, thr=0.012):
         return data
 
 
-log(f"nạp VieNeu-TTS (mode={MODE}, giọng {VOICE})...")
-tts = Vieneu(mode=MODE)
+log(f"nạp VieNeu-TTS (mode={MODE}, giọng {VOICE}"
+    + "".join(f", {k}={v}" for k, v in ENGINE_KWARGS.items()) + ")...")
+tts = Vieneu(mode=MODE, **ENGINE_KWARGS)
+if REMOTE_VOICES:
+    log(f"giọng chuyển tiếp: {REMOTE_VOICES}")
 
 
 # Voice used when a requested name can't be resolved at all (unmatched, or the preset
@@ -473,29 +510,34 @@ install_request_logging(app, "vieneu", log)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
+def _voice_names():
+    """Every voice a caller can ask for: this engine's presets/clones, then the forwarded ones."""
+    return list(getattr(tts, "_preset_voices", {}).keys()) + list(REMOTE_VOICES)
+
+
 @app.get("/health")
 def health():
-    keys = list(getattr(tts, "_preset_voices", {}).keys())
     return {"status": "ok", "voice": VOICE, "mode": MODE,
-            "voices": keys, "cached": list(_voice_cache.keys()),
-            "style_labels": STYLE_LABELS}
+            "voices": _voice_names(), "remote_voices": REMOTE_VOICES,
+            "cached": list(_voice_cache.keys()), "style_labels": STYLE_LABELS}
 
 
 @app.get("/voice")
 def get_voice():
     """Current default voice + the list of voices (for the picker panel)."""
-    return {"voice": VOICE, "voices": list(getattr(tts, "_preset_voices", {}).keys())}
+    return {"voice": VOICE, "voices": _voice_names()}
 
 
 @app.post("/voice")
 def set_voice(name: str):
     """Change the RUNTIME default voice (xiaozhi doesn't send a voice -> uses this default) -> takes effect immediately, no restart needed."""
     global VOICE
-    keys = list(getattr(tts, "_preset_voices", {}).keys())
+    keys = _voice_names()
     if keys and name not in keys:
         return {"ok": False, "error": f"giọng lạ: {name}", "voices": keys}
     VOICE = name
-    _get_voice_data(name)   # warm the cache for the new voice
+    if name not in REMOTE_VOICES:
+        _get_voice_data(name)   # warm the cache for the new voice
     log(f"đổi giọng mặc định -> {name}")
     return {"ok": True, "voice": VOICE}
 
@@ -571,10 +613,39 @@ async def openai_speech(req: Request):
     })
 
 
+async def _forward(name, text, emotion):
+    """Speak `text` as remote voice `name` on the instance that owns it. None if that fails.
+
+    The raw text goes over, not this server's cleaned-up copy: the other instance runs
+    this same file and does the same clean-up, boost and pitch itself.
+    """
+    url = f"{REMOTE_VOICES[name]}/v1/audio/speech"
+    t0 = time.perf_counter()
+    try:
+        timeout = httpx.Timeout(REMOTE_TIMEOUT, connect=REMOTE_CONNECT_TIMEOUT)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            r = await client.post(url, json={"input": text, "voice": name, "instructions": emotion or None})
+        if r.status_code == 200 and r.headers.get("content-type", "").startswith("audio/wav"):
+            log(f"chuyển tiếp [{name}] -> {url} ({len(r.content)//1024} KB, {time.perf_counter() - t0:.1f}s)")
+            return Response(content=r.content, media_type="audio/wav")
+        log(f"chuyển tiếp [{name}] -> {url} trả {r.status_code}: {r.text[:200]}", level="WARNING")
+    except Exception as e:
+        log(f"chuyển tiếp [{name}] -> {url} lỗi: {e!r}", level="WARNING")
+    return None
+
+
 async def synth_from(body: dict):
     text = (body.get("input") or body.get("text") or "").strip()
     # Pick the voice from the request (HA sends 'voice'/'vieneu_voice'); empty -> default voice.
     voice_name = (body.get("voice") or body.get("vieneu_voice") or "").strip()
+    remote = voice_name or VOICE
+    if remote in REMOTE_VOICES and text:
+        forwarded = await _forward(remote, text, body.get("emotion") or body.get("style"))
+        if forwarded is not None:
+            return forwarded
+        # Spoken here instead, in the first of these that this engine can actually speak.
+        voice_name = next(v for v in (VOICE, BOOT_VOICE, FALLBACK_VOICE) if v not in REMOTE_VOICES)
+        log(f"[{remote}] không chuyển tiếp được -> đọc bằng '{voice_name}'", level="WARNING")
     chosen_voice = _get_voice_data(voice_name)
     # Optional speaking style ('natural'/'storytelling'/'news', or a raw style_labels key).
     # Empty -> omit entirely so the engine's own default applies (unchanged behavior for
