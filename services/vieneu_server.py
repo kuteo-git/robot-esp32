@@ -44,13 +44,15 @@ MODE = os.environ.get("VIENEU_MODE", "v3turbo")
 VOICE_REFS_DIR = Path(os.environ.get(
     "VIENEU_VOICE_REFS_DIR", Path(__file__).resolve().parent / "models" / "voice-refs"))
 # Which engine backs Vieneu(). Unset = the package default (torch-free ONNX on CPU), which is
-# production. A LoRA fine-tune can't run there -- upstream's ONNX graphs are exported from the
-# base model -- so the fine-tuned "Trúc Ly Nam" instance sets backend=pytorch, device=mps and
-# points BACKBONE_REPO at its merged model (see run_vieneu_trucly.sh).
+# production. A LoRA fine-tune runs there too once its weights are put into upstream's ONNX
+# graphs (VIENEU_ONNX_DIR; VieNeu-TTS-upstream finetune/trucly/to_onnx.py), with BACKBONE_REPO
+# at its merged model for the voices json + speaker encoder (see run_vieneu_trucly.sh).
+# backend=pytorch + device=mps runs the merged weights directly, ~2.5x slower.
 ENGINE_KWARGS = {k: v for k, v in {
     "backend": os.environ.get("VIENEU_BACKEND"),
     "device": os.environ.get("VIENEU_DEVICE"),
     "backbone_repo": os.environ.get("VIENEU_BACKBONE_REPO"),
+    "onnx_dir": os.environ.get("VIENEU_ONNX_DIR"),
 }.items() if v}
 
 
@@ -154,6 +156,40 @@ def _boost_wav(data, gain_db=BOOST_DB, peak=TARGET_PEAK):
         with wave.open(out, "wb") as w:
             w.setparams(params)
             w.writeframes(s.tobytes())
+        return out.getvalue()
+    except Exception:
+        return data
+
+
+# High-shelf EQ for a voice that comes out dull: "Trúc Ly Nam" (LoRA) inherits v3.0.5's
+# Trúc Ly, ~10dB short of the presets above 4kHz. Done on the FFT -> zero-phase, no scipy.
+# The peak is held where it was, so the boost/limiter after it sees the same headroom.
+# 0 = off (the default; the presets need none).
+EQ_HIGH_DB = float(os.environ.get("VIENEU_EQ_HIGH_DB", "0"))
+EQ_HIGH_HZ = float(os.environ.get("VIENEU_EQ_HIGH_HZ", "3000"))   # corner: half the gain (in dB) here, full gain well above
+
+
+def _eq_wav(data, gain_db=EQ_HIGH_DB, corner_hz=EQ_HIGH_HZ):
+    if abs(gain_db) < 0.1:
+        return data
+    try:
+        with wave.open(io.BytesIO(data), "rb") as w:
+            params = w.getparams()
+            frames = w.readframes(w.getnframes())
+        s = np.frombuffer(frames, dtype=np.int16).astype(np.float32)
+        if s.size < 2 or params.nchannels != 1:
+            return data
+        f = np.fft.rfftfreq(s.size, 1.0 / params.framerate)
+        f[0] = 1e-3
+        shelf_db = gain_db / (1.0 + (corner_hz / f) ** 2)
+        y = np.fft.irfft(np.fft.rfft(s) * 10.0 ** (shelf_db / 20.0), s.size)
+        peak, new_peak = float(np.abs(s).max()), float(np.abs(y).max())
+        if new_peak > peak > 0:
+            y *= peak / new_peak
+        out = io.BytesIO()
+        with wave.open(out, "wb") as w:
+            w.setparams(params)
+            w.writeframes(np.clip(y, -32768, 32767).astype(np.int16).tobytes())
         return out.getvalue()
     except Exception:
         return data
@@ -678,7 +714,7 @@ async def synth_from(body: dict):
                 data = f.read()
         finally:
             os.unlink(path)
-        out = _pitch_wav(_boost_wav(_trim_silence(data)))
+        out = _pitch_wav(_boost_wav(_eq_wav(_trim_silence(data))))
         dt = time.perf_counter() - t0
         gen = f"{int(dt)//60:02d}:{dt % 60:04.1f}"   # MM:SS.s
         log(f"xong [{voice_name or VOICE}] -> WAV {len(out)//1024} KB (gen {gen})")

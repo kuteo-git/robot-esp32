@@ -1,6 +1,6 @@
-# services/.venv-trucly (Python 3.12, macOS) -- only for run_vieneu_trucly.sh.
-# "Trúc Ly Nam" is a LoRA-merged v3 Turbo, which runs on VieNeu's PyTorch engine (MPS), not
-# the torch-free ONNX one services/.venv uses -- hence its own venv instead of adding torch there.
+# services/.venv-trucly (Python 3.12, macOS) -- the FALLBACK engine for run_vieneu_trucly.sh.
+# "Trúc Ly Nam" normally runs on the ONNX engine from services/.venv (its LoRA put into the
+# ONNX graphs); this venv runs the merged PyTorch weights on MPS instead, ~2.5x slower.
 # torch >= 2.13 is required: 2.8 returns wrong numbers on MPS (found while training the LoRA).
 # Install: python3.12 -m venv services/.venv-trucly
 #          services/.venv-trucly/bin/pip install -r services/requirements-trucly.txt
