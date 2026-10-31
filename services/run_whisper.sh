@@ -18,4 +18,11 @@ export WHISPER_MODEL="vinai/PhoWhisper-large"   # only used when BACKEND=transfo
 #   HALLUCINATION_MARKERS filter instead of raising this gate.
 export WHISPER_MIN_RMS="0"   # 2026-06-26 rms gate TURNED OFF (rms<0 is never true): distant voices kept getting dropped. The server-side VAD + _looks_like_hallucination still filter hallucinations.
 export WHISPER_SAVE_AUDIO="1"   # 2026-07-22 turned back on: need real samples to root-cause the recurring post-idle hallucination bug.
+# 2026-10-31: back on PhoWhisper-large after a stint on Moonshine-vi (run_moonshine.sh). A/B on 59 real R1
+#   clips: Moonshine 0.1s but misheard real commands ("bà cái sáu chú bự"); PhoWhisper-large ~1.4s and right.
+#   Most bad clips were a TV/radio in the room, which PhoWhisper turns into believable made-up sentences, so
+#   Moonshine stays on as a ~0.1s pre-filter (its outro hallucination = "this is background, not a person").
+#   Medium (~0.9s) and 4-bit large (~1.1s) were both measurably less accurate; 8-bit saved only ~0.1s.
+export WHISPER_PREFILTER_PATH="$(pwd)/models/moonshine-vi"   # "" = no pre-filter
+export WHISPER_MAX_DUR="20"   # seconds; longer clips are the device listening to a TV until timeout
 exec python whisper_server.py
