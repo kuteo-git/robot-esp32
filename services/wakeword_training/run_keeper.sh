@@ -1,7 +1,7 @@
 #!/bin/bash
 # Keeper run for "Na Bi ơi": synthetic positives + the user's real recordings folded in.
 # Detached (nohup) so it survives the assistant's session pausing.
-cd /Users/lucnguyen/Documents/git/robot-esp32/services/wakeword_training || exit 1
+cd /Volumes/Data2/git/robot-esp32/services/wakeword_training || exit 1
 source .venv-train/bin/activate
 R=/tmp/nabi_keeper_results.txt
 
