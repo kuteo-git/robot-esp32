@@ -360,13 +360,20 @@ async def send_tts_message(conn: "ConnectionHandler", state, text=None):
         await _wait_for_audio_completion(conn)
 
         # 检查是否是当前轮次
+        # BUGFIX: this used to `return`, which skipped the websocket send below -- a sentence_id
+        # change while the audio drained (a paused/resuming playlist does exactly that) meant the
+        # client never got "stop" and stayed in "đang trả lời" forever. A stale turn must still
+        # skip the local cleanup (it belongs to the NEW turn now), but the message always goes out.
         if current_sentence_id != conn.sentence_id:
-            return
-
-        # 停止音频发送循环（仅在流控器已初始化时调用）
-        if hasattr(conn, "audio_rate_controller") and conn.audio_rate_controller:
-            conn.audio_rate_controller.stop_sending()
-        conn.clearSpeakStatus()
+            conn.logger.bind(tag=TAG).warning(
+                f"Sending tts stop with a stale sentence_id ({current_sentence_id} != {conn.sentence_id}), skipping speak-state cleanup"
+            )
+        else:
+            # 停止音频发送循环（仅在流控器已初始化时调用）
+            if hasattr(conn, "audio_rate_controller") and conn.audio_rate_controller:
+                conn.audio_rate_controller.stop_sending()
+            conn.clearSpeakStatus()
+        conn.logger.bind(tag=TAG).info("Send tts stop message")
 
     # 发送消息到客户端
     await conn.websocket.send(json.dumps(message))

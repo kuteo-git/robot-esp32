@@ -502,6 +502,135 @@ def test_get_news_bulletin_error_after_meta_closes_its_own_turn():
 
 
 # ---------------------------------------------------------------------------
+# function_call mode: the turn is opened by the automatic FIRST from tts/base.py, so the plugin
+# must still close it. The FIRST/LAST pair used to be gated on intent_type == "intent_llm", which
+# is never true on this deployment (data/.config.yaml selects Intent: function_call) -- so nothing
+# ever closed the turn and the speaker stayed in "đang trả lời" after pause / end of playlist.
+# ---------------------------------------------------------------------------
+
+
+def _stub_youtube(play_youtube, *, wait_results):
+    """Patch out everything network/ffmpeg in play_youtube and feed _wait_song a canned script.
+    Returns a restore() callable."""
+    saved = {n: getattr(play_youtube, n) for n in
+             ("_download", "_related", "_mp3_duration", "_trim_mp3", "_wait_song", "_wait_paused",
+              "_interrupt_device_audio")}
+    results = list(wait_results)
+
+    async def _fake_interrupt(conn):
+        pass
+
+    async def _fake_wait_song(conn, session, dur, song, seek=0, full_dur=None):
+        return results.pop(0) if results else ("stop", 0)
+
+    async def _fake_wait_paused(conn, session):
+        return "stop"
+
+    play_youtube._download = lambda video_id, cache_dir: f"/tmp/{video_id}.mp3"
+    play_youtube._related = lambda video_id, limit=None: []
+    play_youtube._mp3_duration = lambda path: 10
+    play_youtube._trim_mp3 = lambda path, start_sec: path
+    play_youtube._wait_song = _fake_wait_song
+    play_youtube._wait_paused = _fake_wait_paused
+    play_youtube._interrupt_device_audio = _fake_interrupt
+
+    def restore():
+        for n, v in saved.items():
+            setattr(play_youtube, n, v)
+
+    return restore
+
+
+def _run_youtube_queue(wait_results, intent_type="function_call"):
+    from plugins_func.functions import play_youtube
+
+    conn = FakeConn(intent_type=intent_type)
+    orig_cache_dir = play_youtube._pytube_cache_dir
+    play_youtube._pytube_cache_dir = lambda conn: "/tmp"
+    restore = _stub_youtube(play_youtube, wait_results=wait_results)
+    try:
+        asyncio.run(play_youtube._play_queue(conn, [{"video_id": "abc123", "title": "Test Song"}]))
+    finally:
+        restore()
+        play_youtube._pytube_cache_dir = orig_cache_dir
+    return conn
+
+
+def test_play_youtube_closes_turn_in_function_call_mode():
+    conn = _run_youtube_queue([("stop", 0)])
+    dtos = _drain_through_send_audio_handle(conn)
+    lasts = [d for d in dtos if d.sentence_type == SentenceType.LAST]
+    assert len(lasts) == 1, f"end of playlist must close the turn, got {len(lasts)} LAST"
+    assert conn.client_is_speaking is False, "client must not stay stuck 'responding'"
+
+
+def test_play_youtube_pause_closes_turn():
+    """Pause is the reported case: nothing more will be spoken, possibly forever, so the turn has
+    to be closed there and not only when the playlist ends."""
+    conn = _run_youtube_queue([("paused", 3)])
+    dtos = _drain_through_send_audio_handle(conn)
+    lasts = [d for d in dtos if d.sentence_type == SentenceType.LAST]
+    assert len(lasts) == 1, f"pause must close the turn exactly once, got {len(lasts)} LAST"
+    assert conn.client_is_speaking is False, "speaker must go back to listening while paused"
+
+
+def test_play_music_closes_turn_in_function_call_mode():
+    from plugins_func.functions import play_music
+
+    play_music.MUSIC_CACHE["music_dir"] = "/tmp"
+    conn = FakeConn(intent_type="function_call")
+
+    orig_exists = play_music.os.path.exists
+    play_music.os.path.exists = lambda p: True
+    try:
+        asyncio.run(play_music.play_local_music(conn, specific_file="song.mp3"))
+    finally:
+        play_music.os.path.exists = orig_exists
+
+    dtos = _drain_through_send_audio_handle(conn)
+    lasts = [d for d in dtos if d.sentence_type == SentenceType.LAST]
+    assert len(lasts) == 1, f"expected exactly 1 LAST, got {len(lasts)}"
+    assert conn.client_is_speaking is False, "client must not stay stuck 'responding'"
+
+
+# ---------------------------------------------------------------------------
+# send_tts_message: the "stop" message must reach the client even when the turn moved on
+# ---------------------------------------------------------------------------
+
+
+def test_stop_message_sent_even_with_stale_sentence_id():
+    """BUGFIX: send_tts_message used to `return` when conn.sentence_id changed while the audio
+    drained, skipping the websocket send -- the client never got "stop" and stayed 'responding'."""
+    conn = FakeConn()
+    conn.client_is_speaking = True
+
+    orig_wait = sa._wait_for_audio_completion
+
+    async def _wait_and_steal_turn(c):
+        c.sentence_id = "some-other-turn"  # a resuming playlist does exactly this
+
+    sa._wait_for_audio_completion = _wait_and_steal_turn
+    try:
+        asyncio.run(sa.send_tts_message(conn, "stop", None))
+    finally:
+        sa._wait_for_audio_completion = orig_wait
+
+    stops = [m for m in conn.websocket.messages if m.get("type") == "tts" and m.get("state") == "stop"]
+    assert len(stops) == 1, f"stop message must still be sent, got {conn.websocket.messages}"
+    assert conn.client_is_speaking is True, "speak-state cleanup belongs to the NEW turn, not this one"
+
+
+def test_stop_message_clears_speak_status_for_current_turn():
+    conn = FakeConn()
+    conn.client_is_speaking = True
+    asyncio.run(sa.send_tts_message(conn, "stop", None))
+
+    stops = [m for m in conn.websocket.messages if m.get("type") == "tts" and m.get("state") == "stop"]
+    assert len(stops) == 1
+    assert conn.client_is_speaking is False
+
+
+# ---------------------------------------------------------------------------
 # runner
 # ---------------------------------------------------------------------------
 
@@ -521,6 +650,11 @@ def run():
         ("news bulletin: _run closes turn when still speaking (direct command)", test_get_news_bulletin_run_apologizes_and_closes_when_still_speaking),
         ("news bulletin: _run skips forced close when outer turn already closed", test_get_news_bulletin_run_skips_forced_close_when_outer_turn_already_closed),
         ("news bulletin: fail after meta -> own turn closed", test_get_news_bulletin_error_after_meta_closes_its_own_turn),
+        ("play_youtube closes turn (function_call)", test_play_youtube_closes_turn_in_function_call_mode),
+        ("play_youtube pause closes turn", test_play_youtube_pause_closes_turn),
+        ("play_music closes turn (function_call)", test_play_music_closes_turn_in_function_call_mode),
+        ("stop message sent with stale sentence_id", test_stop_message_sent_even_with_stale_sentence_id),
+        ("stop message clears speak status", test_stop_message_clears_speak_status_for_current_turn),
     ]
 
     passed = 0

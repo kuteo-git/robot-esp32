@@ -396,11 +396,16 @@ async def _play_queue(conn, initial_queue, start_index=0, interrupt_current=Fals
                     guard.opened()
 
             def _close_turn():
-                if intent_llm:
-                    conn.tts.tts_text_queue.put(
-                        TTSMessageDTO(sentence_id=conn.sentence_id, sentence_type=SentenceType.LAST, content_type=ContentType.ACTION)
-                    )
-                    guard.closed()
+                # NOT gated on intent_llm, unlike _open_turn: in function_call mode the turn is
+                # opened for us by the automatic FIRST that tts/base.py emits for the announce, so
+                # something must still close it or the device stays in "đang trả lời" forever
+                # (pause / end of playlist with nobody talking to it afterwards). A LAST with no
+                # turn open is harmless -- it just re-sends the tts "stop" message.
+                logger.bind(tag=TAG).info(f"play_youtube: close turn (sid={conn.sentence_id})")
+                conn.tts.tts_text_queue.put(
+                    TTSMessageDTO(sentence_id=conn.sentence_id, sentence_type=SentenceType.LAST, content_type=ContentType.ACTION)
+                )
+                guard.closed()
 
             idx = 0
             first_turn = True
@@ -514,6 +519,12 @@ async def _play_queue(conn, initial_queue, start_index=0, interrupt_current=Fals
                     pos = max(0, seek + waited)
                     await _interrupt_device_audio(conn)
                     await _send_now_playing(conn, song, state="paused", duration_s=full_dur, position_s=pos)
+                    # Nothing will be spoken until the user resumes, which can be never -- close the
+                    # turn so the device goes back to listening instead of sitting in "đang trả lời".
+                    # Resuming re-opens it: the next announce carries its own FIRST.
+                    if turn_open:
+                        _close_turn()
+                        turn_open = False
                     cont = await _wait_paused(conn, my_session)
                     if cont == "stop":
                         break
@@ -524,7 +535,7 @@ async def _play_queue(conn, initial_queue, start_index=0, interrupt_current=Fals
                             pos = max(0, int(target))
                         queue.insert(0, dict(song, _seek=pos))
                         resume = True
-                    # cont == "next" -> move to the next song (loop continues; a new turn is already open)
+                    # cont == "next" -> move to the next song (the loop re-opens the turn it just closed)
                 if result == "interrupt":
                     # User interrupted the music to ask/say something -> the abort already closed the music turn
                     # (sentence_id will change) -- tell the guard too, so an exception while no turn is open

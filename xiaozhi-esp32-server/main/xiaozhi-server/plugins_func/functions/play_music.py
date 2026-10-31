@@ -246,15 +246,18 @@ async def play_local_music(conn: "ConnectionHandler", specific_file=None):
                     content_file=music_path,
                 )
             )
-            if conn.intent_type == "intent_llm":
-                conn.tts.tts_text_queue.put(
-                    TTSMessageDTO(
-                        sentence_id=conn.sentence_id,
-                        sentence_type=SentenceType.LAST,
-                        content_type=ContentType.ACTION,
-                    )
+            # NOT gated on intent_llm, unlike the FIRST above: in function_call mode the turn is
+            # opened by the automatic FIRST tts/base.py emits for the prompt text, so something
+            # must still close it or the speaker stays in "đang trả lời" after the song ends.
+            # A LAST with no turn open is harmless -- it just re-sends the tts "stop" message.
+            conn.tts.tts_text_queue.put(
+                TTSMessageDTO(
+                    sentence_id=conn.sentence_id,
+                    sentence_type=SentenceType.LAST,
+                    content_type=ContentType.ACTION,
                 )
-                guard.closed()
+            )
+            guard.closed()
 
         except Exception as e:
             conn.logger.bind(tag=TAG).error(f"Failed to play music: {str(e)}")
