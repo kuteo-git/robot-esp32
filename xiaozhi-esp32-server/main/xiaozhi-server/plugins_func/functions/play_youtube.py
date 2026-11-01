@@ -5,6 +5,7 @@ import time
 import uuid
 import asyncio
 import subprocess
+import tempfile
 import requests
 from plugins_func.register import register_function, ToolType, ActionResponse, Action
 from core.providers.tts.dto.dto import TTSMessageDTO, SentenceType, ContentType
@@ -88,6 +89,41 @@ def _download(video_id, cache_dir):
         logger.bind(tag=TAG).warning(f"trigger download {video_id}: {e}")
     matches = glob.glob(os.path.join(cache_dir, f"*_{video_id}.mp3"))
     return matches[0] if matches and os.path.exists(matches[0]) else None
+
+
+def _download_url(song, cache_dir):
+    """Fetch a song cast from myTube: its `audio_url` is an AAC file on the household's own
+    server, converted here to the mp3 the playback path expects. Cached under `mytube/`, which the
+    `*_{id}.mp3` glob of _download never looks into. Returns the mp3 path, or None on any failure
+    (the caller already skips a song that failed to download)."""
+    vid = song.get("video_id")
+    folder = os.path.join(cache_dir or tempfile.gettempdir(), "mytube")
+    final = os.path.join(folder, f"{vid}.mp3")
+    if os.path.exists(final):
+        return final
+    # Unique per call: two sessions fetching the same song at once must not write one file.
+    stem = os.path.join(folder, f"{vid}.{uuid.uuid4().hex}")
+    m4a, mp3 = f"{stem}.m4a.part", f"{stem}.mp3.part"
+    try:
+        os.makedirs(folder, exist_ok=True)
+        with requests.get(song["audio_url"], stream=True, timeout=(5, 60)) as r:
+            r.raise_for_status()
+            with open(m4a, "wb") as f:
+                for chunk in r.iter_content(chunk_size=256 * 1024):
+                    f.write(chunk)
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-i", m4a, "-vn", "-c:a", "libmp3lame", "-q:a", "4", "-f", "mp3", mp3],
+            check=True, capture_output=True, timeout=300,
+        )
+        os.replace(mp3, final)
+        return final
+    except Exception as e:
+        logger.bind(tag=TAG).warning(f"mytube download {vid}: {e}")
+        return None
+    finally:
+        for part in (m4a, mp3):
+            if os.path.exists(part):
+                os.remove(part)
 
 
 def _related(video_id, limit=RELATED_COUNT):
@@ -384,6 +420,9 @@ async def _play_queue(conn, initial_queue, start_index=0, interrupt_current=Fals
             if not 0 <= start_index < len(playlist):
                 start_index = 0
             queue = playlist[start_index:]
+            # myTube owns a cast's queue and sends the next song itself when this one ends, so a
+            # related-song top-up here would play something the household never queued.
+            from_mytube = any(s.get("source") == "mytube" for s in playlist)
             played = set()
             intent_llm = conn.intent_type == "intent_llm"
             turn_open = False
@@ -425,7 +464,7 @@ async def _play_queue(conn, initial_queue, start_index=0, interrupt_current=Fals
                         continue
                     played.add(vid)
                     # Top up when the queue is about to run dry -> plays UNLIMITED (a chain of related songs).
-                    if len(queue) < 2:
+                    if len(queue) < 2 and not from_mytube:
                         # Exclude everything already on the playlist too, not just the unplayed queue,
                         # so a top-up can't re-add a song the user can still see further up the list.
                         have = (played | {q.get("video_id") for q in queue}
@@ -470,7 +509,10 @@ async def _play_queue(conn, initial_queue, start_index=0, interrupt_current=Fals
                     logger.bind(tag=TAG).info(f"play_youtube: {announce}")
                 await _send_now_playing(conn, song, state="downloading")
 
-                path = await asyncio.to_thread(_download, vid, cache_dir)
+                if song.get("audio_url"):
+                    path = await asyncio.to_thread(_download_url, song, cache_dir)
+                else:
+                    path = await asyncio.to_thread(_download, vid, cache_dir)
                 if getattr(conn, "_yt_session", None) != my_session or _conn_closed(conn):
                     break
                 if not path:
