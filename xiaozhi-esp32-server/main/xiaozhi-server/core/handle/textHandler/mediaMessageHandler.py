@@ -36,4 +36,4 @@ class MediaTextMessageHandler(TextMessageHandler):
         elif action == "seek":
             handle_media_seek(conn, int(msg_json.get("position_s") or 0))
         elif action == "stop":
-            handle_media_stop(conn)
+            await handle_media_stop(conn)

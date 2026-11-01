@@ -2,7 +2,7 @@
 playback through the same play_youtube.py session a voice command would use."""
 from typing import TYPE_CHECKING
 
-from plugins_func.functions.play_youtube import play_media_queue
+from plugins_func.functions.play_youtube import _interrupt_device_audio, play_media_queue
 
 if TYPE_CHECKING:
     from core.connection import ConnectionHandler
@@ -52,5 +52,12 @@ def handle_media_seek(conn: "ConnectionHandler", position_s: int):
     conn._yt_web_paused = False
 
 
-def handle_media_stop(conn: "ConnectionHandler"):
+async def handle_media_stop(conn: "ConnectionHandler"):
+    """Stop now. Clearing the session only ends the play loop at its next tick; audio already
+    queued for the R1 kept going out, so the speaker played on after "Stop casting" while it
+    reported itself stopped. Flushed as skip and seek do -- only when something was playing, so
+    a stray stop does not cut off a spoken answer."""
+    if not getattr(conn, "_yt_session", None):
+        return
     conn._yt_session = None
+    await _interrupt_device_audio(conn)
