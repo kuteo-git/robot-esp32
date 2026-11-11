@@ -33,6 +33,7 @@ stream, and a bulletin is meant to be current anyway.
 
 Public on 0.0.0.0:8014. Log: stdout (services/log_web.py, port 8009).
 """
+import asyncio
 import hashlib
 import json
 import os
@@ -504,48 +505,50 @@ def rewrite_stream(blocks):
     raw, payload = _llm_payload(blocks)
     t0 = time.perf_counter()
     log(f"LLM viết lại - stream ({len(raw)} ký tự thô, model {LLM_MODEL})...")
-    r = requests.post(
+    # `with`: a reader that goes away mid-bulletin closes this generator, and the connection to the
+    # LLM must close with it instead of streaming on into a dropped response.
+    with requests.post(
         f"{LLM_BASE}/chat/completions",
         json=payload,
         headers={"Authorization": f"Bearer {LLM_KEY}", "Content-Type": "application/json"},
         timeout=180,
         stream=True,
-    )
-    r.raise_for_status()
-    buf, count, chars, gaps, first = "", 0, 0, 0, None
-    # decode_unicode=False + explicit UTF-8: the stream is text/event-stream with no charset, and
-    # letting requests guess gives ISO-8859-1, which mangles every Vietnamese character.
-    for line in r.iter_lines(decode_unicode=False):
-        if not line:
-            continue
-        s = line.decode("utf-8", errors="replace").strip()
-        if not s.startswith("data:"):
-            continue
-        chunk = s[5:].strip()
-        if not chunk or chunk == "[DONE]":
-            continue
-        try:
-            delta = json.loads(chunk)["choices"][0].get("delta", {})
-        except Exception:
-            continue
-        if not (c := delta.get("content")):
-            continue
-        buf += c
-        while (m := _SENT_END.search(buf)):
-            sentence, buf = buf[: m.start() + 1].strip(), buf[m.end():]
-            # The marker sits BETWEEN sentences, so it arrives glued to the front of the next one
-            # (or, when the model puts it on its own line, as a sentence that is nothing else).
-            # Either way the pause belongs before whatever text is left.
-            if GAP_MARKER in sentence:
-                gaps += 1
-                yield "gap", ""
-            if not (sentence := _strip_markdown(sentence)):
+    ) as r:
+        r.raise_for_status()
+        buf, count, chars, gaps, first = "", 0, 0, 0, None
+        # decode_unicode=False + explicit UTF-8: the stream is text/event-stream with no charset, and
+        # letting requests guess gives ISO-8859-1, which mangles every Vietnamese character.
+        for line in r.iter_lines(decode_unicode=False):
+            if not line:
                 continue
-            count, chars = count + 1, chars + len(sentence)
-            if first is None:
-                first = time.perf_counter() - t0
-                log(f"câu đầu tiên sau {first:.1f}s: {sentence[:60]}")
-            yield "text", sentence
+            s = line.decode("utf-8", errors="replace").strip()
+            if not s.startswith("data:"):
+                continue
+            chunk = s[5:].strip()
+            if not chunk or chunk == "[DONE]":
+                continue
+            try:
+                delta = json.loads(chunk)["choices"][0].get("delta", {})
+            except Exception:
+                continue
+            if not (c := delta.get("content")):
+                continue
+            buf += c
+            while (m := _SENT_END.search(buf)):
+                sentence, buf = buf[: m.start() + 1].strip(), buf[m.end():]
+                # The marker sits BETWEEN sentences, so it arrives glued to the front of the next one
+                # (or, when the model puts it on its own line, as a sentence that is nothing else).
+                # Either way the pause belongs before whatever text is left.
+                if GAP_MARKER in sentence:
+                    gaps += 1
+                    yield "gap", ""
+                if not (sentence := _strip_markdown(sentence)):
+                    continue
+                count, chars = count + 1, chars + len(sentence)
+                if first is None:
+                    first = time.perf_counter() - t0
+                    log(f"câu đầu tiên sau {first:.1f}s: {sentence[:60]}")
+                yield "text", sentence
     if (tail := _strip_markdown(buf.strip())):
         count, chars = count + 1, chars + len(tail)
         yield "text", tail
@@ -818,6 +821,12 @@ async def text_only(req: Request):
     order = [c["key"] for c in cats if isinstance(c, dict) and c.get("enabled") and c.get("key")]
     if not order:
         return JSONResponse({"ok": False, "error": "no enabled categories"}, status_code=400)
+    # Fetching and the LLM block for up to a minute; on the event loop they would stall every
+    # other request (/health, /stream) for that long.
+    return await asyncio.to_thread(_text_bulletin, order)
+
+
+def _text_bulletin(order):
     t0 = time.perf_counter()
     log(f"soạn văn bản bản tin: mục={order}")
     blocks = fetch_blocks(order)
@@ -841,7 +850,11 @@ async def generate(req: Request):
     order = [c["key"] for c in cats if isinstance(c, dict) and c.get("enabled") and c.get("key")]
     if not order:
         return JSONResponse({"ok": False, "error": "no enabled categories"}, status_code=400)
+    # Fetching, the LLM, TTS and ffmpeg block for minutes; off the event loop, like /text.
+    return await asyncio.to_thread(_generate_bulletin, order, voice)
 
+
+def _generate_bulletin(order, voice):
     os.makedirs(CACHE_DIR, exist_ok=True)
     _prune_cache()
     key = _cache_key(order, voice)
