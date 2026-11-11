@@ -11,6 +11,10 @@ import requests
 TAG = __name__
 logger = setup_logging()
 
+# Whisper caps a clip's length, so a minute is far beyond any honest transcription; past it the
+# server is hung and the utterance is better dropped than waited on for ever.
+REQUEST_TIMEOUT_S = 60
+
 class ASRProvider(ASRProviderBase):
     def __init__(self, config: dict, delete_audio_file: bool):
         self.interface_type = InterfaceType.NON_STREAM
@@ -63,6 +67,7 @@ class ASRProvider(ASRProviderBase):
                         files=files,
                         data=data,
                         headers=headers,
+                        timeout=REQUEST_TIMEOUT_S,
                     ),
                 )
                 logger.bind(tag=TAG).debug(

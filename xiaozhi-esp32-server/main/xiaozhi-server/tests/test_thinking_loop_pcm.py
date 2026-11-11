@@ -7,6 +7,7 @@ import core.providers.tts.base as base_mod
 class _FakeConn:
     def __init__(self, sample_rate=16000):
         self.sample_rate = sample_rate
+        self.channels = 1
 
 
 class _TTS(TTSProviderBase):

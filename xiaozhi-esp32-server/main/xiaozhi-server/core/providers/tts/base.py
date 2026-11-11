@@ -142,7 +142,7 @@ class TTSProviderBase(ABC):
 
         Cached because a single configured clip means the same handful of bytes is reused every
         turn forever, and decoding one costs a measured 8ms."""
-        key = (sound_file, self.conn.sample_rate, gain_db)
+        key = (sound_file, self.conn.sample_rate, self.conn.channels, gain_db)
         pcm = _THINKING_LOOP_PCM_CACHE.get(key)
         if pcm is None:
             pcm = self._decode_thinking_pcm(sound_file, gain_db)
@@ -205,7 +205,7 @@ class TTSProviderBase(ABC):
             return
         sample_rate = self.conn.sample_rate
         frame_ms = 60
-        frame_bytes = int(sample_rate * frame_ms / 1000) * 2  # 16-bit mono
+        frame_bytes = int(sample_rate * frame_ms / 1000) * 2 * self.conn.channels  # 16-bit PCM
         # How far ahead of the ideal real-time playback schedule production is allowed to
         # run. Frame-locked pacing (sleep to within a few ms of exactly frame_ms between
         # every frame) measured sleep overruns up to 75ms on 84% of frames under real load

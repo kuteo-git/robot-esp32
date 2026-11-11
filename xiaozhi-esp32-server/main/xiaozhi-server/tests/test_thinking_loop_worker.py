@@ -7,6 +7,7 @@ from core.providers.tts.dto.dto import SentenceType
 class _FakeConn:
     def __init__(self, sample_rate=16000):
         self.sample_rate = sample_rate
+        self.channels = 1
         self.stop_event = threading.Event()
         self.client_abort = False
         self.text_only = False
