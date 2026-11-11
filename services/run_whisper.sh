@@ -23,6 +23,9 @@ export WHISPER_SAVE_AUDIO="1"   # 2026-07-22 turned back on: need real samples t
 #   Most bad clips were a TV/radio in the room, which PhoWhisper turns into believable made-up sentences, so
 #   Moonshine stays on as a ~0.1s pre-filter (its outro hallucination = "this is background, not a person").
 #   Medium (~0.9s) and 4-bit large (~1.1s) were both measurably less accurate; 8-bit saved only ~0.1s.
-export WHISPER_PREFILTER_PATH="$(pwd)/models/moonshine-vi"   # "" = no pre-filter
+# 2026-10-31 (later): pre-filter OFF. With the ward loudspeaker broadcasting, Moonshine flagged a real
+#   command as "subscribe..." noise (asr_debug 20261031_173316: PhoWhisper heard "bật đèn phòng khách giúp
+#   mình hôm nay thời tiết thế nào." perfectly) -- it cannot tell a quiet voice from background speech.
+export WHISPER_PREFILTER_PATH=""   # "$(pwd)/models/moonshine-vi" to turn the pre-filter back on
 export WHISPER_MAX_DUR="20"   # seconds; longer clips are the device listening to a TV until timeout
 exec python whisper_server.py

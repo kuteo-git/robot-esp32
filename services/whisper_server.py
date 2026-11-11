@@ -38,10 +38,12 @@ MIN_RMS = float(os.environ.get("WHISPER_MIN_RMS", "0.006"))       # 0..1 (silenc
 # drops below -1.0 -> reject.
 # (PhoWhisper's no_speech_prob is always 0 so it's useless; avg_logprob is what actually discriminates.)
 MIN_LOGPROB = float(os.environ.get("WHISPER_MIN_LOGPROB", "-1.0"))
-# LENGTH CAP: a spoken command is a few seconds; a clip far longer than that is the device having
-# listened to a TV/radio in the room until its own timeout (2026-10-31: clips of 33s and 128s). On
-# PhoWhisper-large a 128s clip takes ~34s and holds the GPU lock the whole time, so a real command
-# spoken meanwhile queues behind it. 0 = no cap.
+# LENGTH CAP: only the FIRST MAX_DURATION seconds of a clip are transcribed. A clip far longer than a
+# command is the device listening on while background speech (the ward loudspeaker, a TV) keeps the
+# VAD open (2026-10-31: clips of 33s, 54s, 128s). The user speaks right after the wake word, so the
+# command sits at the START: in the 54s clip it was in seconds 0-20 and the rest was the loudspeaker.
+# Dropping the whole clip lost that command; truncating keeps it. It also bounds the work: a 128s
+# clip took ~34s on PhoWhisper-large and held the GPU lock throughout. 0 = no cap.
 MAX_DURATION = float(os.environ.get("WHISPER_MAX_DUR", "20"))
 # MOONSHINE PRE-FILTER: run the small Moonshine-vi model (~0.1s) BEFORE PhoWhisper-large. On
 # background TV/radio speech Moonshine reliably emits a YouTube outro ("Hãy subscribe cho kênh La La
@@ -90,11 +92,26 @@ def _audio_gate(path):
     rms = float(np.sqrt(np.mean(np.square(data))))
     if dur < MIN_DURATION:
         return False, f"quá ngắn {dur:.2f}s"
-    if MAX_DURATION > 0 and dur > MAX_DURATION:
-        return False, f"quá dài {dur:.1f}s"
     if rms < MIN_RMS:
         return False, f"quá nhỏ rms={rms:.4f}"
     return True, ""
+
+
+def _truncate_to_max(path):
+    """Cut the clip at `path` down to its first MAX_DURATION seconds, in place (see LENGTH CAP).
+    Returns the original duration if it was cut, else None. An unreadable file is left alone."""
+    if MAX_DURATION <= 0:
+        return None
+    try:
+        data, sr = sf.read(path, dtype="float32", always_2d=False)
+        dur = len(data) / float(sr or 16000)
+        if dur <= MAX_DURATION:
+            return None
+        sf.write(path, data[: int(MAX_DURATION * sr)], sr, format="WAV", subtype="PCM_16")
+        return dur
+    except Exception as e:
+        log(f"cắt clip dài lỗi (để nguyên): {e}", level="WARN")
+        return None
 
 
 def _looks_like_hallucination(text: str) -> bool:
@@ -452,6 +469,9 @@ async def transcribe(file: UploadFile = File(...), model: str = Form(None)):
         tmp.write(await file.read())
         path = tmp.name
     try:
+        cut_from = _truncate_to_max(path)
+        if cut_from:
+            log(f"clip dài {cut_from:.1f}s -> chỉ dịch {MAX_DURATION:.0f}s đầu")
         ok, reason = _audio_gate(path)
         if not ok:
             log(f"bỏ qua audio {reason} (khỏi chạy Whisper)")
