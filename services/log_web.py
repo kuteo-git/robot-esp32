@@ -67,18 +67,29 @@ async def follow(path):
         return
     f.seek(0, 2)
     inode = os.fstat(f.fileno()).st_ino
+    partial = ""  # a line still being written: held until its newline arrives
     while True:
         line = f.readline()
         if line:
-            yield line.rstrip("\n")
+            if not line.endswith("\n"):
+                partial += line
+                continue
+            yield (partial + line).rstrip("\n")
+            partial = ""
             continue
         await asyncio.sleep(0.4)
-        # detect the file being rotated/replaced (service restart) -> reopen it
+        # detect the file being rotated/replaced (service restart) -> reopen it; truncated in place
+        # (same inode, now shorter than where we are) -> read it again from the start
         try:
-            if os.stat(path).st_ino != inode:
+            st = os.stat(path)
+            if st.st_ino != inode:
                 f.close()
                 f = open(path, "r", errors="replace")
                 inode = os.fstat(f.fileno()).st_ino
+                partial = ""
+            elif st.st_size < f.tell():
+                f.seek(0)
+                partial = ""
         except Exception:
             pass
 

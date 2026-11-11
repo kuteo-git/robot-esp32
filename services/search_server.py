@@ -16,12 +16,21 @@ from _logsetup import make_logger, install_request_logging
 
 CONTENT_LEN = int(os.environ.get("SEARCH_CONTENT_LEN", "1200"))  # truncate the content fetched per page
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+MAX_PAGE_BYTES = int(os.environ.get("SEARCH_MAX_PAGE_BYTES", str(2 * 1024 * 1024)))
 
 
 def _fetch_content(url: str) -> str:
     """Fetch the page + extract the MAIN content (trafilatura, strips nav/ads) -> more detail than the snippet."""
     try:
-        html = requests.get(url, timeout=7, headers=UA).text
+        # Streamed and cut at MAX_PAGE_BYTES: a result can be a huge file, and only the start of a
+        # page's text is kept anyway.
+        with requests.get(url, timeout=7, headers=UA, stream=True) as r:
+            body = b""
+            for chunk in r.iter_content(64 * 1024):
+                body += chunk
+                if len(body) >= MAX_PAGE_BYTES:
+                    break
+            html = body[:MAX_PAGE_BYTES].decode(r.encoding or "utf-8", errors="replace")
         txt = trafilatura.extract(html, include_comments=False, include_tables=False) or ""
         return " ".join(txt.split())[:CONTENT_LEN]
     except Exception:
@@ -54,10 +63,10 @@ def search(q: str, n: int = 4, region: str = "vn-vi", fetch: int = 2):
                 })
         # Fetch the main content of the first few pages (in parallel) -> more detail.
         if fetch > 0 and results:
-            urls = [r["url"] for r in results[:fetch] if r["url"]]
-            with ThreadPoolExecutor(max_workers=max(1, len(urls))) as ex:
-                for i, c in enumerate(ex.map(_fetch_content, urls)):
-                    results[i]["content"] = c
+            targets = [r for r in results[:fetch] if r["url"]]
+            with ThreadPoolExecutor(max_workers=max(1, len(targets))) as ex:
+                for r, c in zip(targets, ex.map(_fetch_content, [r["url"] for r in targets])):
+                    r["content"] = c
         took = time.time() - t0
         log(f"q='{q}' region={region} -> {len(results)} kết quả ({took:.2f}s)")
         for i, r in enumerate(results):

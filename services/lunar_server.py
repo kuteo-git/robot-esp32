@@ -25,6 +25,10 @@ PORT = int(os.environ.get("LUNAR_PORT", "8013"))
 log = make_logger("lunar")
 
 
+class DateOutOfRange(ValueError):
+    pass
+
+
 class LunarDate(object):
     _startDate = datetime.date(1900, 1, 31)
 
@@ -164,6 +168,9 @@ class LunarDate(object):
             return (month, offset + 1, isLeapMonth)
 
         offset = int(offset)
+        if not 0 <= offset < sum(yearDays):
+            # Past either end of the table the arithmetic below yields a negative or huge day.
+            raise DateOutOfRange(f"{offset} days from 1900-01-31 is outside the table")
         for idx, yearDay in enumerate(yearDays):
             if offset < yearDay:
                 break
@@ -237,6 +244,8 @@ def yearInfo2yearDay(yearInfo):
 
 
 yearDays = [yearInfo2yearDay(x) for x in yearInfos]
+FIRST_SOLAR = LunarDate._startDate
+LAST_SOLAR = FIRST_SOLAR + datetime.timedelta(days=sum(yearDays) - 1)
 
 DAYS_OF_WEEK = ["Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật"]
 
@@ -277,6 +286,9 @@ def lunar(request: Request, date: str = None, format: str = "json"):
     except Exception as e:
         ok = False
         result = "Không tính được âm lịch cho ngày đó."
+        if isinstance(e, DateOutOfRange):
+            result = (f"Chỉ tính được âm lịch cho ngày từ {FIRST_SOLAR:%d/%m/%Y} "
+                      f"đến {LAST_SOLAR:%d/%m/%Y}.")
         log(f"lỗi tính âm lịch (date={date!r}): {e}")
 
     client = request.client.host if request.client else "?"
