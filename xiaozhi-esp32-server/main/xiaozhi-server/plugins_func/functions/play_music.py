@@ -1,4 +1,5 @@
 import os
+import asyncio
 import re
 import time
 import random
@@ -52,8 +53,9 @@ def play_music(conn: "ConnectionHandler", song_name: str):
             )
 
         # Submit the async task
-        task = conn.loop.create_task(
-            handle_music_command(conn, music_intent)  # wraps the async logic
+        # run_coroutine_threadsafe: plugins run on a worker thread, where loop.create_task is unsafe.
+        task = asyncio.run_coroutine_threadsafe(
+            handle_music_command(conn, music_intent), conn.loop
         )
 
         # Non-blocking callback handling

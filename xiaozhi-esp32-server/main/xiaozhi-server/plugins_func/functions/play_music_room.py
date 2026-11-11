@@ -1,4 +1,5 @@
 import os
+import asyncio
 import requests
 from plugins_func.register import register_function, ToolType, ActionResponse, Action
 from plugins_func.functions.hass_init import initialize_hass_handler
@@ -84,7 +85,8 @@ def play_music_room(conn, query: str, room: str):
         if not conn.loop.is_running():
             return ActionResponse(action=Action.RESPONSE, result="busy", response="Khoan chút nha mày.")
         # run in the background (blocking HTTP calls) so it doesn't block the event loop
-        task = conn.loop.create_task(_run(conn, query, room))
+        # run_coroutine_threadsafe: plugins run on a worker thread, where loop.create_task is unsafe.
+        task = asyncio.run_coroutine_threadsafe(_run(conn, query, room), conn.loop)
 
         def done(f):
             try:

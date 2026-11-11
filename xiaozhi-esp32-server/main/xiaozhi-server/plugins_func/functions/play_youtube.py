@@ -174,7 +174,8 @@ def play_youtube(conn: "ConnectionHandler", query: str):
     try:
         if not conn.loop.is_running():
             return ActionResponse(action=Action.RESPONSE, response="Hệ thống đang bận, lát thử lại nha")
-        task = conn.loop.create_task(_play(conn, query))
+        # Plugins run in a worker thread (plugin_executor), so the session is handed to the loop.
+        task = asyncio.run_coroutine_threadsafe(_play(conn, query), conn.loop)
 
         def _log_done(f):
             try:

@@ -1,12 +1,12 @@
 """服务端插件工具执行器"""
 
+import asyncio
 from typing import Dict, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from core.connection import ConnectionHandler
 from ..base import ToolType, ToolDefinition, ToolExecutor
 from plugins_func.register import all_function_registry, Action, ActionResponse
-
 
 class ServerPluginExecutor(ToolExecutor):
     """服务端插件工具执行器"""
@@ -27,21 +27,15 @@ class ServerPluginExecutor(ToolExecutor):
 
         try:
             # 根据工具类型决定如何调用
-            if hasattr(func_item, "type"):
-                func_type = func_item.type
-                if func_type.code in [4, 5]:  # SYSTEM_CTL, IOT_CTL (需要conn参数)
-                    result = func_item.func(conn, **arguments)
-                elif func_type.code == 2:  # WAIT
-                    result = func_item.func(**arguments)
-                elif func_type.code == 3:  # CHANGE_SYS_PROMPT
-                    result = func_item.func(conn, **arguments)
-                else:
-                    result = func_item.func(**arguments)
+            func_type = getattr(func_item, "type", None)
+            if func_type is not None and func_type.code in [3, 4, 5]:  # CHANGE_SYS_PROMPT, SYSTEM_CTL, IOT_CTL (需要conn参数)
+                args = (conn,)
             else:
-                # 默认不传conn参数
-                result = func_item.func(**arguments)
+                args = ()
 
-            return result
+            # The event loop is shared by every device. Plugins are synchronous and many make HTTP
+            # calls of 20-60s; run on the loop, one froze audio and messages for every connection.
+            return await asyncio.to_thread(func_item.func, *args, **arguments)
 
         except Exception as e:
             return ActionResponse(
