@@ -71,7 +71,7 @@ def _say(conn, text):
     )
 
 
-def _stream_bulletin(conn, categories, voice):
+def _stream_bulletin(conn, categories, voice, turn_id=None):
     """Reads the bulletin ALOUD AS THE MODEL WRITES IT, one sentence at a time.
 
     The wait was almost entirely unnecessary. Measured against this model, the first complete
@@ -96,6 +96,8 @@ def _stream_bulletin(conn, categories, voice):
     bulletin and only needs the turn closed (already done here via the finally below).
     """
     sentence_id = uuid.uuid4().hex
+    if turn_id is None:
+        turn_id = conn.sentence_id
     q = conn.tts.tts_text_queue
 
     def put(stype, ctype, **kw):
@@ -128,6 +130,11 @@ def _stream_bulletin(conn, categories, voice):
                 evt = json.loads(s[5:].strip())
             except Exception:
                 continue
+            if not started and conn.sentence_id != turn_id:
+                # The user started another turn while this was being written; taking
+                # conn.sentence_id now would silence that answer and play the bulletin instead.
+                logger.bind(tag=TAG).info("news bulletin: a newer turn started, dropping it")
+                break
             if (meta := evt.get("meta")) is not None:
                 end_wav = meta.get("end_wav")
                 gap_wav = meta.get("gap_wav")
@@ -168,7 +175,9 @@ def _stream_bulletin(conn, categories, voice):
     return spoken, started
 
 
-async def _run(conn, spoken_filler=True):
+async def _run(conn, spoken_filler=True, turn_id=None):
+    if turn_id is None:
+        turn_id = conn.sentence_id
     try:
         cfg = news_store.load_schedule(conn.device_id) or {}
         categories = cfg.get("categories") or []
@@ -198,7 +207,9 @@ async def _run(conn, spoken_filler=True):
         except Exception as e:
             logger.bind(tag=TAG).warning(f"news bulletin: không bật được tiếng chờ: {e}")
 
-        spoken, started = await asyncio.to_thread(_stream_bulletin, conn, categories, voice)
+        spoken, started = await asyncio.to_thread(_stream_bulletin, conn, categories, voice, turn_id)
+        if not started and conn.sentence_id != turn_id:
+            return   # superseded: an apology now would be read inside the newer answer
         if not started:
             # The turn in _stream_bulletin never opened (request failed before the service's
             # `meta` event, or returned nothing) -- conn.sentence_id was never repointed there,
@@ -233,7 +244,9 @@ def get_news_bulletin(conn: "ConnectionHandler", spoken_filler=True):
     try:
         if not conn.loop.is_running():
             return ActionResponse(action=Action.RESPONSE, response="Hệ thống đang bận, lát thử lại nha")
-        conn.loop.create_task(_run(conn, spoken_filler=spoken_filler))
+        asyncio.run_coroutine_threadsafe(
+            _run(conn, spoken_filler=spoken_filler, turn_id=conn.sentence_id), conn.loop
+        )
         # Answer immediately so the wait isn't silent (same idea as play_youtube's "đang tải"),
         # then the finished bulletin is queued onto this same turn when the service returns.
         return ActionResponse(

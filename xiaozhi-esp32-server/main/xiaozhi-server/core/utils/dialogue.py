@@ -66,29 +66,37 @@ class Dialogue:
         确保所有 tool_calls 都有对应的 tool 响应
         修复被打断导致的悬空 tool_calls，防止大模型 API 报 400 错误
         """
-        pending_tool_calls = set()
+        pending_tool_calls = []
         result = []
 
+        def answer_pending():
+            # The API wants each call's tool message right after its assistant message, so a
+            # missing one is filled in before the next non-tool message, not at the end.
+            for missing_id in pending_tool_calls:
+                result.append(
+                    Message(
+                        role="tool",
+                        content='{"status": "interrupted", "message": "动作已取消/被打断"}',
+                        tool_call_id=missing_id,
+                    )
+                )
+            pending_tool_calls.clear()
+
         for msg in messages:
+            if msg.role == "tool" and msg.tool_call_id:
+                if msg.tool_call_id in pending_tool_calls:
+                    pending_tool_calls.remove(msg.tool_call_id)
+            else:
+                answer_pending()
             result.append(msg)
 
             if msg.role == "assistant" and msg.tool_calls:
                 for tc in msg.tool_calls:
                     tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
                     if tc_id:
-                        pending_tool_calls.add(tc_id)
+                        pending_tool_calls.append(tc_id)
 
-            elif msg.role == "tool" and msg.tool_call_id:
-                pending_tool_calls.discard(msg.tool_call_id)
-
-        for missing_id in pending_tool_calls:
-            dummy_tool_msg = Message(
-                role="tool",
-                content='{"status": "interrupted", "message": "动作已取消/被打断"}',
-                tool_call_id=missing_id
-            )
-            result.append(dummy_tool_msg)
-
+        answer_pending()
         return result
 
     def get_llm_dialogue_with_memory(

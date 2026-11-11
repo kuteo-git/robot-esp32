@@ -73,7 +73,9 @@ class ListenTextMessageHandler(TextMessageHandler):
                     call_text = original_text[len("[device_call]"):].strip()
                     conn.logger.bind(tag=TAG).info(f"Received device call command: {call_text}")
 
-                    # 准备开始新会话
+                    # 准备开始新会话. The abort above leaves client_abort set, and the TTS worker
+                    # drops everything while it is, so clear it as every other new turn does.
+                    conn.client_abort = False
                     conn.sentence_id = uuid.uuid4().hex
 
                     await send_stt_message(conn, call_text)

@@ -940,7 +940,7 @@ class ConnectionHandler:
         finally:
             self.tts.stop_thinking_loop()
 
-    def chat(self, query, depth=0):
+    def chat(self, query, depth=0, sentence_id=None):
         # 保存当前任务的sentence_id到局部变量，避免被新任务覆盖
         current_sentence_id = None
 
@@ -967,8 +967,8 @@ class ConnectionHandler:
             except Exception as e:
                 self.logger.bind(tag=TAG).warning(f"Thinking loop error: {e}")
         else:
-            # 递归调用时，使用当前的sentence_id
-            current_sentence_id = self.sentence_id
+            # A follow-up pass belongs to the turn that started it, not to whatever turn is live now.
+            current_sentence_id = sentence_id
 
         # 设置最大递归深度，避免无限循环，可根据实际需求调整
         MAX_DEPTH = 5
@@ -1219,7 +1219,12 @@ class ConnectionHandler:
                     )
 
                     # 使用公共方法上报工具调用
-                    tool_input = json.loads(tool_call_data.get("arguments") or "{}")
+                    # Arguments can arrive truncated (the stream stopped mid-JSON). The handler
+                    # answers those with its own error reply; parsing here is only for the report.
+                    try:
+                        tool_input = json.loads(tool_call_data.get("arguments") or "{}")
+                    except json.JSONDecodeError:
+                        tool_input = {}
                     enqueue_tool_report(self, tool_call_data['name'], tool_input)
 
                     future = asyncio.run_coroutine_threadsafe(
@@ -1254,9 +1259,17 @@ class ConnectionHandler:
                         # 上报工具调用错误
                         enqueue_tool_report(self, tool_call_data['name'], tool_input, str(e), report_tool_call=False)
 
+                # The user may have started a new turn while the tools ran. Speaking this turn's
+                # results now would read them out inside the new answer.
+                if self.sentence_id != current_sentence_id:
+                    self.logger.bind(tag=TAG).info("Turn superseded during tool call, dropping its results")
+                    return None
+
                 # 统一处理工具调用结果
                 if tool_results:
-                    self._handle_function_result(tool_results, depth=depth, streamed_text=streamed_text)
+                    self._handle_function_result(
+                        tool_results, depth=depth, sentence_id=current_sentence_id, streamed_text=streamed_text
+                    )
 
         # 存储对话内容
         if len(response_message) > 0:
@@ -1281,7 +1294,7 @@ class ConnectionHandler:
 
         return True
 
-    def _handle_function_result(self, tool_results, depth, streamed_text=""):
+    def _handle_function_result(self, tool_results, depth, sentence_id, streamed_text=""):
         need_llm_tools = []
         record_tools = []
 
@@ -1297,8 +1310,8 @@ class ConnectionHandler:
                         f"Skipping duplicate TTS for tool {tool_call_data['name']}, already streamed"
                     )
                 else:
-                    self.tts.tts_one_sentence(self, ContentType.TEXT, content_detail=text)
-                    self.tts.store_tts_text(self.sentence_id, text)
+                    self.tts.tts_one_sentence(self, ContentType.TEXT, content_detail=text, sentence_id=sentence_id)
+                    self.tts.store_tts_text(sentence_id, text)
                 self.dialogue.put(Message(role="assistant", content=text))
             elif result.action == Action.REQLLM:
                 need_llm_tools.append((result, tool_call_data))
@@ -1373,21 +1386,19 @@ class ConnectionHandler:
             self.dialogue.put(Message(role="assistant", tool_calls=all_tool_calls))
 
             for result, tool_call_data in need_llm_tools:
-                text = result.result
-                if text is not None and len(text) > 0:
-                    self.dialogue.put(
-                        Message(
-                            role="tool",
-                            tool_call_id=(
-                                str(uuid.uuid4())
-                                if tool_call_data["id"] is None
-                                else tool_call_data["id"]
-                            ),
-                            content=text,
-                        )
+                self.dialogue.put(
+                    Message(
+                        role="tool",
+                        tool_call_id=(
+                            str(uuid.uuid4())
+                            if tool_call_data["id"] is None
+                            else tool_call_data["id"]
+                        ),
+                        content=result.result or "",
                     )
+                )
 
-            self.chat(None, depth=depth + 1)
+            self.chat(None, depth=depth + 1, sentence_id=sentence_id)
 
     def _report_worker(self):
         """聊天记录上报工作线程"""
