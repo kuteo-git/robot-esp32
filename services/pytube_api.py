@@ -70,7 +70,11 @@ def _cache_get(key):
 
 
 def _cache_set(key, value):
-    _API_CACHE[key] = (time.time(), value)
+    now = time.time()
+    for k, (ts, _) in list(_API_CACHE.items()):
+        if now - ts >= _API_CACHE_TTL:
+            _API_CACHE.pop(k, None)
+    _API_CACHE[key] = (now, value)
 
 
 def ensure_directory_exists(path):
@@ -194,8 +198,13 @@ def find_cached_metadata_file(video_id):
         logger.error(f"Failed to find cached MP3 file: {str(e)}")
         return None
 
+_YOUTUBE_ID = re.compile(r"[A-Za-z0-9_-]{11}")
+
+
 def find_cached_mp3_file(video_id):
     """Find cached MP3 file by video_id using glob pattern"""
+    if not _YOUTUBE_ID.fullmatch(video_id or ""):
+        return None  # anything else would be a glob ("*" matches every cached song)
     try:
         pattern = os.path.join(folder_path, f"*_{video_id}.mp3")
         matches = glob.glob(pattern)
@@ -358,9 +367,11 @@ def download_audio_with_ytdlp(video_id):
                 
                 # Find the downloaded file (might not be mp3)
                 pattern = os.path.join(folder_path, f"*_{video_id}.*")
-                matches = glob.glob(pattern)
+                # The metadata cache (.json) and yt-dlp's leftovers (.part, .ytdl) share this
+                # pattern; renaming one of them to .mp3 would overwrite the audio just downloaded.
+                matches = [m for m in glob.glob(pattern) if not m.endswith(('.json', '.part', '.ytdl'))]
                 if matches:
-                    downloaded_file = matches[0]
+                    downloaded_file = ([m for m in matches if m.endswith('.mp3')] or matches)[0]
                     logger.info(f"Downloaded file: {downloaded_file}")
                     
                     # Rename to .mp3 for consistency (even if it's not audio)
