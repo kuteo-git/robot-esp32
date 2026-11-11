@@ -384,6 +384,23 @@ async def _push_queue(conn, queue):
         pass
 
 
+def _take_upcoming(conn, session, queue, playlist, played):
+    """The edited upcoming list a phone sent (`handle_media_queue`), if one waits for this session.
+    Returns the queue and the panel's playlist to go on with: the songs already consumed stay at
+    the top of the playlist, the edit replaces the rest. A song in the edit that already played
+    plays again: the edit is what the household asked for."""
+    pending = getattr(conn, "_yt_upcoming", None)
+    if not pending:
+        return queue, playlist, False
+    conn._yt_upcoming = None
+    owner, upcoming = pending
+    if owner != session:
+        return queue, playlist, False
+    consumed = playlist[:max(0, len(playlist) - len(queue))]
+    played.difference_update(s.get("video_id") for s in upcoming)
+    return list(upcoming), consumed + list(upcoming), True
+
+
 async def _play_queue(conn, initial_queue, start_index=0, interrupt_current=False):
     """Core playback loop: session setup, endless-queue top-up (related songs), per-song
     play/wait/interrupt/pause handling. Shared by the voice-triggered search path (play_youtube)
@@ -395,6 +412,7 @@ async def _play_queue(conn, initial_queue, start_index=0, interrupt_current=Fals
             # Claim the session BEFORE clearing below, so the outgoing session's post-download guard
             # (`_yt_session != my_session -> break`) stops it re-queueing audio after we flush.
             conn._yt_session = my_session
+            conn._yt_upcoming = None
             conn._yt_skip = 0
             conn._yt_web_paused = False
             if interrupt_current and had_session:
@@ -451,7 +469,15 @@ async def _play_queue(conn, initial_queue, start_index=0, interrupt_current=Fals
             resume = False  # True = replay the current song (after the user interrupted to ask something)
             await _send_music(conn, "start")   # -> tells the R1 app to turn on the music LED
             await _push_queue(conn, playlist)
-            while queue:
+            while True:
+                # An edit is taken between songs, never over one being replayed (a resume or a scrub
+                # puts the current song back at the front): it waits for that song to end.
+                if not resume:
+                    queue, playlist, edited = _take_upcoming(conn, my_session, queue, playlist, played)
+                    if edited:
+                        await _push_queue(conn, playlist)
+                if not queue:
+                    break
                 if getattr(conn, "_yt_session", None) != my_session or _conn_closed(conn):
                     break
                 if idx >= MAX_SONGS:   # reached MAX_SONGS -> stop (don't play forever)

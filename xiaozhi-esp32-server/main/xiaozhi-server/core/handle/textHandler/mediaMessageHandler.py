@@ -2,6 +2,7 @@ from typing import Dict, Any
 
 from core.handle.mediaHandle import (
     handle_media_play,
+    handle_media_queue,
     handle_media_next,
     handle_media_pause,
     handle_media_resume,
@@ -27,6 +28,8 @@ class MediaTextMessageHandler(TextMessageHandler):
                 msg_json.get("items") or [],
                 int(msg_json.get("start_index") or 0),
             )
+        elif action == "queue":
+            handle_media_queue(conn, msg_json.get("items") or [])
         elif action == "next":
             handle_media_next(conn)
         elif action == "pause":

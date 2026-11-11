@@ -27,6 +27,17 @@ async def handle_media_play(conn: "ConnectionHandler", songs: list, start_index:
     task.add_done_callback(_log_done)
 
 
+def handle_media_queue(conn: "ConnectionHandler", songs: list):
+    """What plays after the current song, replaced without cutting it off: a phone edited the list it
+    started (removed, moved or added songs). The playing loop takes it at the next song boundary
+    (`_take_upcoming`); it is tagged with the session so a list that has since been replaced
+    ignores it. The last edit wins."""
+    session = getattr(conn, "_yt_session", None)
+    if not session:
+        return
+    conn._yt_upcoming = (session, [s for s in (songs or []) if s.get("video_id")])
+
+
 def handle_media_next(conn: "ConnectionHandler"):
     if not getattr(conn, "_yt_session", None):
         return
