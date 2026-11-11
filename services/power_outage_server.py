@@ -38,7 +38,9 @@ PARENT_KEYWORDS = os.environ.get(
 ).split(",")
 PORT = int(os.environ.get("POWER_PORT", "8011"))
 REFRESH_SEC = int(os.environ.get("POWER_REFRESH_SEC", "10800"))  # 3 hours
+RETRY_SEC = int(os.environ.get("POWER_RETRY_SEC", "300"))  # after a failed refresh
 NONE_MSG = "Không có lịch cúp điện ở " + AREA_LABEL
+NOT_YET_MSG = "Chưa lấy được lịch cúp điện ở " + AREA_LABEL
 
 
 log = make_logger("poweroutage")
@@ -88,8 +90,9 @@ def _affects_target(khu_vuc):
     n = _norm(khu_vuc)
     if TARGET_AP in n:
         return True
-    # mentions a specific 'ấp' (hamlet) that isn't Binh Nam -> a different hamlet -> doesn't affect us
-    if re.search(r"\bap\b", n):
+    # mentions a specific 'ấp' (hamlet) that isn't Binh Nam -> a different hamlet -> doesn't affect us.
+    # Read on the accented text: stripped of diacritics, "trạm biến áp" (a substation) is "ap" too.
+    if re.search(r"\bấp\b", unicodedata.normalize("NFC", khu_vuc or "").lower()):
         return False
     # a broad area (not just one hamlet) -> keep if it matches a parent area
     return any(k.strip() and k.strip() in n for k in PARENT_KEYWORDS)
@@ -97,6 +100,10 @@ def _affects_target(khu_vuc):
 
 def build_report():
     blocks = get_text_by_id(URL, CLASS)
+    if not blocks:
+        # The page always carries schedule blocks; none means its layout changed or it is broken,
+        # which must not be read out as "no outages".
+        raise ValueError(f"không thấy khối '{CLASS}' nào trên trang")
     today = date.today()
     items = []
     for b in blocks:
@@ -117,8 +124,9 @@ def build_report():
     return "\n".join(lines), len(items)
 
 
-_cache = {"result": NONE_MSG, "count": 0, "updated": 0.0, "ok": False}
+_cache = {"result": NOT_YET_MSG, "count": 0, "updated": 0.0, "ok": False, "failed_at": 0.0}
 _lock = threading.Lock()
+_refresh_lock = threading.Lock()  # one scrape at a time; a request arriving mid-scrape uses the cache
 
 
 def refresh():
@@ -129,14 +137,35 @@ def refresh():
         log(f"refresh OK ({count} lịch ảnh hưởng) -> dữ liệu mới:\n{result}")
     except Exception as e:
         with _lock:
-            _cache["ok"] = False
+            _cache.update(ok=False, failed_at=time.time())
         log(f"refresh LỖI: {e}")
+
+
+def _refresh_due():
+    now = time.time()
+    stale = not _cache["updated"] or now - _cache["updated"] > REFRESH_SEC
+    return stale and now - _cache["failed_at"] >= RETRY_SEC
+
+
+def _refresh_if_due():
+    """Refresh when the cache is old, but not again within RETRY_SEC of a failure and never twice at
+    once. Returns whether this call refreshed."""
+    if not _refresh_due() or not _refresh_lock.acquire(blocking=False):
+        return False
+    try:
+        if not _refresh_due():
+            return False
+        refresh()
+        return True
+    finally:
+        _refresh_lock.release()
 
 
 def _bg_loop():
     while True:
         time.sleep(REFRESH_SEC)
-        refresh()
+        with _refresh_lock:
+            refresh()
 
 
 app = FastAPI()
@@ -151,10 +180,7 @@ def health():
 
 @app.get("/power_outage")
 def power_outage(request: Request, format: str = "json"):
-    refreshed = False
-    if time.time() - _cache["updated"] > REFRESH_SEC or not _cache["updated"]:
-        refresh()
-        refreshed = True
+    refreshed = _refresh_if_due()
     with _lock:
         result = _cache["result"]
         count = _cache["count"]

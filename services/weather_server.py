@@ -28,6 +28,7 @@ LOCATION = os.environ.get("WEATHER_LOCATION", "Bình Hòa Trung, Mộc Hóa, Lon
 PORT = int(os.environ.get("WEATHER_PORT", "8010"))
 REFRESH_SEC = int(os.environ.get("WEATHER_REFRESH_SEC", "1200"))  # 20 minutes
 HOURS = int(os.environ.get("WEATHER_HOURS", "10"))  # number of hourly slots to return
+RETRY_SEC = int(os.environ.get("WEATHER_RETRY_SEC", "300"))  # after a failed refresh
 
 # /weather (above) is TODAY only -- thoitiet.vn has separate pages for "tomorrow" and "the coming
 # week", both under the same div class. Cached and refreshed separately since day-level data doesn't
@@ -120,13 +121,16 @@ def parse_week(txt):
     return "\n".join(lines)
 
 
-_cache = {"result": "", "updated": 0.0, "ok": False}
+_cache = {"result": "", "updated": 0.0, "ok": False, "failed_at": 0.0}
 _lock = threading.Lock()
 _multiday_cache = {
-    "tomorrow": {"result": "", "updated": 0.0, "ok": False},
-    "week": {"result": "", "updated": 0.0, "ok": False},
+    "tomorrow": {"result": "", "updated": 0.0, "ok": False, "failed_at": 0.0},
+    "week": {"result": "", "updated": 0.0, "ok": False, "failed_at": 0.0},
 }
 _multiday_lock = threading.Lock()
+# One scrape at a time per page; a request arriving mid-scrape uses the cache.
+_refresh_lock = threading.Lock()
+_multiday_refresh_locks = {"tomorrow": threading.Lock(), "week": threading.Lock()}
 MULTIDAY_SOURCES = {
     "tomorrow": (TOMORROW_URL, parse_tomorrow),
     "week": (WEEK_URL, parse_week),
@@ -144,7 +148,7 @@ def refresh():
         log(f"refresh OK -> dữ liệu mới:\n{result}")
     except Exception as e:
         with _lock:
-            _cache["ok"] = False
+            _cache.update(ok=False, failed_at=time.time())
         log(f"refresh LỖI: {e}")
 
 
@@ -160,21 +164,43 @@ def refresh_multiday(period):
         log(f"refresh {period} OK -> dữ liệu mới:\n{result}")
     except Exception as e:
         with _multiday_lock:
-            _multiday_cache[period]["ok"] = False
+            _multiday_cache[period].update(ok=False, failed_at=time.time())
         log(f"refresh {period} LỖI: {e}")
+
+
+def _refresh_due(entry, interval):
+    now = time.time()
+    stale = not entry["result"] or now - entry["updated"] > interval
+    return stale and now - entry["failed_at"] >= RETRY_SEC
+
+
+def _refresh_if_due(entry, interval, refresh_lock, do_refresh):
+    """Refresh when the cache is old, but not again within RETRY_SEC of a failure and never twice at
+    once. Returns whether this call refreshed."""
+    if not _refresh_due(entry, interval) or not refresh_lock.acquire(blocking=False):
+        return False
+    try:
+        if not _refresh_due(entry, interval):
+            return False
+        do_refresh()
+        return True
+    finally:
+        refresh_lock.release()
 
 
 def _bg_loop():
     while True:
         time.sleep(REFRESH_SEC)
-        refresh()
+        with _refresh_lock:
+            refresh()
 
 
 def _bg_loop_multiday():
     while True:
         time.sleep(MULTIDAY_REFRESH_SEC)
         for period in MULTIDAY_SOURCES:
-            refresh_multiday(period)
+            with _multiday_refresh_locks[period]:
+                refresh_multiday(period)
 
 
 app = FastAPI()
@@ -192,10 +218,7 @@ def health():
 @app.get("/weather")
 def weather(request: Request, format: str = "json"):
     # If the cache is older than the refresh interval, refresh right now (synchronously)
-    refreshed = False
-    if time.time() - _cache["updated"] > REFRESH_SEC or not _cache["result"]:
-        refresh()
-        refreshed = True
+    refreshed = _refresh_if_due(_cache, REFRESH_SEC, _refresh_lock, refresh)
     with _lock:
         result = _cache["result"]
         updated = _cache["updated"]
@@ -219,11 +242,8 @@ def weather_forecast(request: Request, period: str = "tomorrow", format: str = "
     """period: "tomorrow" (hourly for tomorrow) or "week" (per-day for the next 7 days)."""
     if period not in MULTIDAY_SOURCES:
         return JSONResponse({"error": f"period phải là một trong {list(MULTIDAY_SOURCES)}"}, status_code=400)
-    refreshed = False
-    entry = _multiday_cache[period]
-    if time.time() - entry["updated"] > MULTIDAY_REFRESH_SEC or not entry["result"]:
-        refresh_multiday(period)
-        refreshed = True
+    refreshed = _refresh_if_due(_multiday_cache[period], MULTIDAY_REFRESH_SEC,
+                                _multiday_refresh_locks[period], lambda: refresh_multiday(period))
     with _multiday_lock:
         result = _multiday_cache[period]["result"]
         updated = _multiday_cache[period]["updated"]
