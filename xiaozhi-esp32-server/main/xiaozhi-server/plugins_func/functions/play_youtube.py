@@ -4,6 +4,7 @@ import json
 import time
 import uuid
 import asyncio
+import inspect
 import subprocess
 import tempfile
 import requests
@@ -124,6 +125,18 @@ def _download_url(song, cache_dir):
         for part in (m4a, mp3):
             if os.path.exists(part):
                 os.remove(part)
+
+
+def _fetch(song, cache_dir):
+    """The song's local mp3, from myTube's `audio_url` or through pytube; None on failure."""
+    if song.get("audio_url"):
+        return _download_url(song, cache_dir)
+    return _download(song.get("video_id"), cache_dir)
+
+
+def _begun(task):
+    """True once a download task has handed its work to a thread, which a cancel cannot stop."""
+    return inspect.getcoroutinestate(task.get_coro()) != inspect.CORO_CREATED
 
 
 def _related(video_id, limit=RELATED_COUNT):
@@ -407,6 +420,9 @@ async def _play_queue(conn, initial_queue, start_index=0, interrupt_current=Fals
     play/wait/interrupt/pause handling. Shared by the voice-triggered search path (play_youtube)
     and the web-triggered caller-supplied-list path (play_media_queue)."""
     my_session = time.time()
+    # The next song's download as (video_id, task), started while the current song plays so the
+    # household does not hear it download between songs. One song ahead at most.
+    ahead = None
     async with conn.turn_guard() as guard:
         try:
             had_session = bool(getattr(conn, "_yt_session", None))
@@ -486,9 +502,18 @@ async def _play_queue(conn, initial_queue, start_index=0, interrupt_current=Fals
                     break
                 song = queue.pop(0)
                 vid = song.get("video_id")
+                if not resume and (not vid or vid in played):
+                    continue
+                # A prefetch serves only the song it was started for, coming up fresh. Anything else
+                # coming first (an edit, a related top-up) drops it; a replay of the current song
+                # keeps one already downloading, so that song is never fetched twice at once.
+                prefetched = None
+                if ahead and ahead[0] == vid and not resume:
+                    prefetched, ahead = ahead[1], None
+                elif ahead and not (resume and _begun(ahead[1])):
+                    ahead[1].cancel()
+                    ahead = None
                 if not resume:
-                    if not vid or vid in played:
-                        continue
                     played.add(vid)
                     # Top up when the queue is about to run dry -> plays UNLIMITED (a chain of related songs).
                     if len(queue) < 2 and not from_mytube:
@@ -536,10 +561,9 @@ async def _play_queue(conn, initial_queue, start_index=0, interrupt_current=Fals
                     logger.bind(tag=TAG).info(f"play_youtube: {announce}")
                 await _send_now_playing(conn, song, state="downloading")
 
-                if song.get("audio_url"):
-                    path = await asyncio.to_thread(_download_url, song, cache_dir)
-                else:
-                    path = await asyncio.to_thread(_download, vid, cache_dir)
+                path = await prefetched if prefetched else None
+                if not path:
+                    path = await asyncio.to_thread(_fetch, song, cache_dir)
                 if getattr(conn, "_yt_session", None) != my_session or _conn_closed(conn):
                     break
                 if not path:
@@ -550,7 +574,8 @@ async def _play_queue(conn, initial_queue, start_index=0, interrupt_current=Fals
                 # Measure the WHOLE track from the untrimmed file: a trimmed mp3 copied with `-c copy`
                 # can keep the original Xing header, so probing the trimmed file can report the full
                 # length back and inflate every total.
-                full_dur = _mp3_duration(path) or _parse_dur(song.get("duration")) or DEFAULT_DUR
+                full_dur = (await asyncio.to_thread(_mp3_duration, path)
+                            or _parse_dur(song.get("duration")) or DEFAULT_DUR)
                 play_path = await asyncio.to_thread(_trim_mp3, path, seek) if seek > 0 else path
                 if seek > 0 and play_path == path:
                     # _trim_mp3 fell back to the original (e.g. ffmpeg can't decode a corrupt cache
@@ -560,6 +585,9 @@ async def _play_queue(conn, initial_queue, start_index=0, interrupt_current=Fals
                     seek = 0
                 _queue_file(conn, play_path)  # download done -> auto-plays (from second 'seek' if this is a resume)
                 idx += 1
+                nxt = next((s for s in queue if s.get("video_id") and s["video_id"] not in played), None)
+                if not ahead and nxt and idx < MAX_SONGS:
+                    ahead = (nxt["video_id"], asyncio.create_task(asyncio.to_thread(_fetch, nxt, cache_dir)))
                 play_dur = max(1, full_dur - seek)  # how much audio actually remains to be played
                 await _send_now_playing(conn, song, state="playing", duration_s=full_dur, position_s=seek)
                 result, waited = await _wait_song(conn, my_session, play_dur, song, seek, full_dur)
@@ -627,6 +655,8 @@ async def _play_queue(conn, initial_queue, start_index=0, interrupt_current=Fals
             logger.bind(tag=TAG).error(f"_play_queue: {e}")
             raise
         finally:
+            if ahead:
+                ahead[1].cancel()
             # Turn off the music LED when this playlist stops (ran out of songs / "stop the music"). Do NOT
             # turn it off if a NEW music command has already taken over the session (that session turns its
             # own LED on) -> avoids turning it off by mistake.
